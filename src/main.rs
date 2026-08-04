@@ -1,16 +1,16 @@
-//! Codex Meter backend scaffold.
+//! Codex Meter backend entry point.
 //!
-//! Phase 0 deliberately contains no business implementation. The executable
-//! exists so the Rust crate and its test harness are wired before Phase 1.
+//! Phase 1 establishes the domain and storage layers. The long-running
+//! collectors and HTTP service are intentionally deferred to later phases.
 
 fn main() {
-    println!("codex-meter scaffold");
+    println!("codex-meter storage foundation");
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn phase_zero_scaffold_is_present() {
+    fn crate_is_present() {
         assert_eq!(env!("CARGO_PKG_NAME"), "codex-meter");
     }
 }

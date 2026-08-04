@@ -2,7 +2,7 @@
 
 Codex Meter 是一个完全本地运行的 Codex 用量与订阅窗口估算工具。每台机器独立采集、独立存储，不上传数据，也不与其他机器同步。
 
-当前仓库按执行计划从阶段 0 开始实现。阶段 0 只包含可复现的初始化骨架、协议证据快照和脱敏 fixture；业务领域模型、采集器、数据库和页面仍未开始实现。
+当前仓库按执行计划完成了阶段 0，并完成阶段 1 的领域模型与 SQLite 存储基础。JSONL、App Server、ccusage 采集器、HTTP API 和业务页面仍按计划留在后续阶段。
 
 ## 文档
 
@@ -10,6 +10,7 @@ Codex Meter 是一个完全本地运行的 Codex 用量与订阅窗口估算工�
 - [最终设计](docs/FINAL_DESIGN.md)：系统架构、采集频率、数据库、计算规则、价格版本和前端页面。
 - [精细化设计审查](docs/DESIGN_REVIEW.md)：阻断级风险、修订结论和剩余边界。
 - [执行计划](docs/IMPLEMENTATION_PLAN.md)：按阶段实施、测试和验收标准。
+- [阶段 1 实施记录](docs/PHASE_1.md)：SQLite schema、领域模型和阶段门禁结果。
 
 ## 已固定的核心决策
 
@@ -29,3 +30,11 @@ Codex Meter 是一个完全本地运行的 Codex 用量与订阅窗口估算工�
 - `fixtures/ccusage/`：固定的 `ccusage` 版本与 `codex daily/session --json` 输出契约。
 - `fixtures/mappings/`：当前本机历史 `model_provider=pro` 且 `plan_type=null` 到 `Other/API` 的人工映射。
 - `scripts/`：fixture 生成与隐私门禁脚本。
+
+## 阶段 1 资产
+
+- `migrations/0001_initial.sql`：版本化 SQLite schema，包含原始观察、快照、派生结果、价格/容量版本、标定和审计表。
+- `src/domain/`：账号身份、上下文区间、token/配额/ccusage 模型、来源质量元数据和北京时间展示转换。
+- `src/storage/`：SQLite 连接池、WAL/foreign keys/busy timeout 配置、可重复迁移和存储写入接口。
+
+阶段 1 已验证重复原始事件不会重复计数，账号上下文区间允许相邻但拒绝重叠；后续采集器和业务 API 尚未实现。

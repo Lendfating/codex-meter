@@ -20,6 +20,7 @@ e2e:
 
 check:
     cargo fmt --all -- --check
+    cargo clippy --all-targets --all-features -- -D warnings
     cargo test --all-targets
     cd web && npm test
     python3 scripts/validate_fixture.py
