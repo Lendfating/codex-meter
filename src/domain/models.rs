@@ -165,7 +165,10 @@ pub struct TokenObservation {
     pub observed_at_ms: EpochMillis,
     pub tokens: TokenCounts,
     pub model: Option<String>,
+    pub model_provider: Option<String>,
     pub service_tier: Option<String>,
+    pub model_context_window: Option<i64>,
+    pub rate_limits: Option<Value>,
     pub source_digest: String,
     pub collector_version: String,
 }
@@ -310,4 +313,88 @@ pub struct CollectorRun {
     pub status: String,
     pub stderr_summary: Option<String>,
     pub collector_version: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JsonlFileState {
+    pub machine_id: i64,
+    pub path_key: String,
+    pub session_id: Option<String>,
+    pub inode: Option<i64>,
+    pub offset_bytes: i64,
+    pub mtime_ms: Option<EpochMillis>,
+    pub digest: Option<String>,
+    pub active_state: String,
+    pub cli_version: Option<String>,
+    pub model_provider: Option<String>,
+    pub thread_source: Option<String>,
+    pub session_started_at_ms: Option<EpochMillis>,
+    pub last_model: Option<String>,
+    pub last_model_provider_id: Option<String>,
+    pub last_service_tier: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JsonlSessionMetadata {
+    pub machine_id: i64,
+    pub session_id: String,
+    pub observed_at_ms: EpochMillis,
+    pub cli_version: Option<String>,
+    pub model_provider: Option<String>,
+    pub thread_source: Option<String>,
+    pub source_digest: String,
+    pub collector_version: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JsonlThreadSetting {
+    pub machine_id: i64,
+    pub session_id: String,
+    pub observed_at_ms: EpochMillis,
+    pub model: Option<String>,
+    pub model_provider_id: Option<String>,
+    pub service_tier: String,
+    pub source_digest: String,
+    pub collector_version: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct JsonlRateLimitWindow {
+    pub used_percent: Option<f64>,
+    pub window_minutes: Option<i64>,
+    pub resets_at_ms: Option<EpochMillis>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JsonlCredits {
+    pub has_credits: Option<bool>,
+    pub unlimited: Option<bool>,
+    pub balance: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct JsonlRateLimitObservation {
+    pub machine_id: i64,
+    pub session_id: String,
+    pub observed_at_ms: EpochMillis,
+    pub limit_id: String,
+    pub limit_name: Option<String>,
+    pub plan_type_raw: Option<String>,
+    pub primary: JsonlRateLimitWindow,
+    pub secondary: JsonlRateLimitWindow,
+    pub credits: JsonlCredits,
+    pub source_digest: String,
+    pub collector_version: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct JsonlDailyTokenRollup {
+    pub machine_id: i64,
+    pub local_date: String,
+    pub timezone: String,
+    pub tokens: TokenCounts,
+    pub source: String,
+    pub quality: Quality,
+    pub collector_version: String,
+    pub source_digest: String,
 }

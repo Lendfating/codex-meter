@@ -141,7 +141,7 @@ mod tests {
             .fetch_one(database.pool())
             .await
             .unwrap();
-        assert_eq!(migration_count, 1);
+        assert_eq!(migration_count, 2);
         assert_eq!(database.pragma_status().await.unwrap().foreign_keys, 1);
         database.close().await;
         cleanup(&path);

@@ -1,13 +1,35 @@
 use crate::domain::{
     AccountContextInterval, AccountIdentity, AccountUsageSnapshot, CalibrationSegment,
-    CcusageSessionSnapshot, CollectorRun, DailyRollup, Machine, ManualAnnotation, PlanCapacity,
-    PricingVersion, QuotaSnapshot, TokenObservation, UsageDelta,
+    CcusageSessionSnapshot, CollectorRun, DailyRollup, JsonlDailyTokenRollup, JsonlFileState,
+    JsonlRateLimitObservation, JsonlSessionMetadata, JsonlThreadSetting, Machine, ManualAnnotation,
+    PlanCapacity, PricingVersion, QuotaSnapshot, TokenObservation, UsageDelta,
 };
 
 use super::{Database, StorageError};
+use sqlx::{sqlite::SqliteRow, Row};
 
 fn bool_to_i64(value: Option<bool>) -> Option<i64> {
     value.map(|value| if value { 1 } else { 0 })
+}
+
+fn jsonl_file_from_row(row: SqliteRow) -> Result<JsonlFileState, sqlx::Error> {
+    Ok(JsonlFileState {
+        machine_id: row.try_get("machine_id")?,
+        path_key: row.try_get("path_key")?,
+        session_id: row.try_get("session_id")?,
+        inode: row.try_get("inode")?,
+        offset_bytes: row.try_get("offset_bytes")?,
+        mtime_ms: row.try_get("mtime_ms")?,
+        digest: row.try_get("digest")?,
+        active_state: row.try_get("active_state")?,
+        cli_version: row.try_get("cli_version")?,
+        model_provider: row.try_get("model_provider")?,
+        thread_source: row.try_get("thread_source")?,
+        session_started_at_ms: row.try_get("session_started_at_ms")?,
+        last_model: row.try_get("last_model")?,
+        last_model_provider_id: row.try_get("last_model_provider_id")?,
+        last_service_tier: row.try_get("last_service_tier")?,
+    })
 }
 
 impl Database {
@@ -22,6 +44,255 @@ impl Database {
         .execute(&self.pool)
         .await?;
         Ok(result.last_insert_rowid())
+    }
+
+    pub async fn jsonl_file_by_path(
+        &self,
+        machine_id: i64,
+        path_key: &str,
+    ) -> Result<Option<JsonlFileState>, StorageError> {
+        let row = sqlx::query(
+            "SELECT machine_id, path_key, session_id, inode, offset_bytes, mtime_ms, digest,
+                    active_state, cli_version, model_provider, thread_source,
+                    session_started_at_ms, last_model, last_model_provider_id, last_service_tier
+             FROM jsonl_files
+             WHERE machine_id = ? AND path_key = ?",
+        )
+        .bind(machine_id)
+        .bind(path_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(jsonl_file_from_row).transpose()?)
+    }
+
+    pub async fn jsonl_file_by_inode(
+        &self,
+        machine_id: i64,
+        inode: i64,
+    ) -> Result<Option<JsonlFileState>, StorageError> {
+        let row = sqlx::query(
+            "SELECT machine_id, path_key, session_id, inode, offset_bytes, mtime_ms, digest,
+                    active_state, cli_version, model_provider, thread_source,
+                    session_started_at_ms, last_model, last_model_provider_id, last_service_tier
+             FROM jsonl_files
+             WHERE machine_id = ? AND inode = ?
+             ORDER BY id DESC
+             LIMIT 1",
+        )
+        .bind(machine_id)
+        .bind(inode)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(jsonl_file_from_row).transpose()?)
+    }
+
+    pub async fn upsert_jsonl_file(&self, state: &JsonlFileState) -> Result<(), StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let existing_id = if let Some(inode) = state.inode {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM jsonl_files WHERE machine_id = ? AND inode = ? ORDER BY id DESC LIMIT 1",
+            )
+            .bind(state.machine_id)
+            .bind(inode)
+            .fetch_optional(&mut *transaction)
+            .await?
+        } else {
+            None
+        };
+
+        if let Some(existing_id) = existing_id {
+            sqlx::query(
+                "UPDATE jsonl_files SET
+                    path_key = ?, session_id = ?, inode = ?, offset_bytes = ?, mtime_ms = ?,
+                    digest = ?, active_state = ?, cli_version = ?, model_provider = ?,
+                    thread_source = ?, session_started_at_ms = ?, last_model = ?,
+                    last_model_provider_id = ?, last_service_tier = ?
+                 WHERE id = ?",
+            )
+            .bind(&state.path_key)
+            .bind(&state.session_id)
+            .bind(state.inode)
+            .bind(state.offset_bytes)
+            .bind(state.mtime_ms)
+            .bind(&state.digest)
+            .bind(&state.active_state)
+            .bind(&state.cli_version)
+            .bind(&state.model_provider)
+            .bind(&state.thread_source)
+            .bind(state.session_started_at_ms)
+            .bind(&state.last_model)
+            .bind(&state.last_model_provider_id)
+            .bind(&state.last_service_tier)
+            .bind(existing_id)
+            .execute(&mut *transaction)
+            .await?;
+        } else {
+            sqlx::query(
+                "INSERT INTO jsonl_files
+                    (machine_id, path_key, session_id, inode, offset_bytes, mtime_ms, digest,
+                     active_state, cli_version, model_provider, thread_source,
+                     session_started_at_ms, last_model, last_model_provider_id, last_service_tier)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (machine_id, path_key) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    inode = excluded.inode,
+                    offset_bytes = excluded.offset_bytes,
+                    mtime_ms = excluded.mtime_ms,
+                    digest = excluded.digest,
+                    active_state = excluded.active_state,
+                    cli_version = excluded.cli_version,
+                    model_provider = excluded.model_provider,
+                    thread_source = excluded.thread_source,
+                    session_started_at_ms = excluded.session_started_at_ms,
+                    last_model = excluded.last_model,
+                    last_model_provider_id = excluded.last_model_provider_id,
+                    last_service_tier = excluded.last_service_tier",
+            )
+            .bind(state.machine_id)
+            .bind(&state.path_key)
+            .bind(&state.session_id)
+            .bind(state.inode)
+            .bind(state.offset_bytes)
+            .bind(state.mtime_ms)
+            .bind(&state.digest)
+            .bind(&state.active_state)
+            .bind(&state.cli_version)
+            .bind(&state.model_provider)
+            .bind(&state.thread_source)
+            .bind(state.session_started_at_ms)
+            .bind(&state.last_model)
+            .bind(&state.last_model_provider_id)
+            .bind(&state.last_service_tier)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn insert_jsonl_session_metadata(
+        &self,
+        metadata: &JsonlSessionMetadata,
+    ) -> Result<bool, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO jsonl_session_metadata
+                (machine_id, session_id, observed_at_ms, cli_version, model_provider,
+                 thread_source, source_digest, collector_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (machine_id, source_digest) DO NOTHING",
+        )
+        .bind(metadata.machine_id)
+        .bind(&metadata.session_id)
+        .bind(metadata.observed_at_ms)
+        .bind(&metadata.cli_version)
+        .bind(&metadata.model_provider)
+        .bind(&metadata.thread_source)
+        .bind(&metadata.source_digest)
+        .bind(&metadata.collector_version)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn insert_jsonl_thread_setting(
+        &self,
+        setting: &JsonlThreadSetting,
+    ) -> Result<bool, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO jsonl_thread_settings
+                (machine_id, session_id, observed_at_ms, model, model_provider_id,
+                 service_tier, source_digest, collector_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (machine_id, source_digest) DO NOTHING",
+        )
+        .bind(setting.machine_id)
+        .bind(&setting.session_id)
+        .bind(setting.observed_at_ms)
+        .bind(&setting.model)
+        .bind(&setting.model_provider_id)
+        .bind(&setting.service_tier)
+        .bind(&setting.source_digest)
+        .bind(&setting.collector_version)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn insert_jsonl_rate_limit(
+        &self,
+        observation: &JsonlRateLimitObservation,
+    ) -> Result<bool, StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO jsonl_rate_limit_observations
+                (machine_id, session_id, observed_at_ms, limit_id, limit_name, plan_type_raw,
+                 primary_used_percent, primary_window_minutes, primary_resets_at_ms,
+                 secondary_used_percent, secondary_window_minutes, secondary_resets_at_ms,
+                 credits_has_credits, credits_unlimited, credits_balance, source_digest,
+                 collector_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (machine_id, source_digest) DO NOTHING",
+        )
+        .bind(observation.machine_id)
+        .bind(&observation.session_id)
+        .bind(observation.observed_at_ms)
+        .bind(&observation.limit_id)
+        .bind(&observation.limit_name)
+        .bind(&observation.plan_type_raw)
+        .bind(observation.primary.used_percent)
+        .bind(observation.primary.window_minutes)
+        .bind(observation.primary.resets_at_ms)
+        .bind(observation.secondary.used_percent)
+        .bind(observation.secondary.window_minutes)
+        .bind(observation.secondary.resets_at_ms)
+        .bind(bool_to_i64(observation.credits.has_credits))
+        .bind(bool_to_i64(observation.credits.unlimited))
+        .bind(&observation.credits.balance)
+        .bind(&observation.source_digest)
+        .bind(&observation.collector_version)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn upsert_jsonl_daily_token_rollup(
+        &self,
+        rollup: &JsonlDailyTokenRollup,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO jsonl_daily_token_rollups
+                (machine_id, local_date, timezone, input_tokens, cached_input_tokens,
+                 cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens,
+                 source, quality, collector_version, source_digest)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (machine_id, local_date) DO UPDATE SET
+                timezone = excluded.timezone,
+                input_tokens = excluded.input_tokens,
+                cached_input_tokens = excluded.cached_input_tokens,
+                cache_write_input_tokens = excluded.cache_write_input_tokens,
+                output_tokens = excluded.output_tokens,
+                reasoning_output_tokens = excluded.reasoning_output_tokens,
+                total_tokens = excluded.total_tokens,
+                source = excluded.source,
+                quality = excluded.quality,
+                collector_version = excluded.collector_version,
+                source_digest = excluded.source_digest",
+        )
+        .bind(rollup.machine_id)
+        .bind(&rollup.local_date)
+        .bind(&rollup.timezone)
+        .bind(rollup.tokens.input_tokens)
+        .bind(rollup.tokens.cached_input_tokens)
+        .bind(rollup.tokens.cache_write_input_tokens)
+        .bind(rollup.tokens.output_tokens)
+        .bind(rollup.tokens.reasoning_output_tokens)
+        .bind(rollup.tokens.total_tokens)
+        .bind(&rollup.source)
+        .bind(rollup.quality.as_str())
+        .bind(&rollup.collector_version)
+        .bind(&rollup.source_digest)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn insert_account_identity(
@@ -83,9 +354,9 @@ impl Database {
             "INSERT INTO token_observations
              (machine_id, context_interval_id, session_id, turn_id, observed_at_ms,
               input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens,
-              reasoning_output_tokens, total_tokens, model, service_tier, source_digest,
-              collector_version)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              reasoning_output_tokens, total_tokens, model, model_provider, service_tier,
+              model_context_window, rate_limits_json, source_digest, collector_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (machine_id, source_digest) DO NOTHING",
         )
         .bind(observation.machine_id)
@@ -100,7 +371,16 @@ impl Database {
         .bind(observation.tokens.reasoning_output_tokens)
         .bind(observation.tokens.total_tokens)
         .bind(observation.model.as_deref())
+        .bind(observation.model_provider.as_deref())
         .bind(observation.service_tier.as_deref())
+        .bind(observation.model_context_window)
+        .bind(
+            observation
+                .rate_limits
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+        )
         .bind(&observation.source_digest)
         .bind(&observation.collector_version)
         .execute(&self.pool)
@@ -488,7 +768,10 @@ mod tests {
                 ..TokenCounts::default()
             },
             model: Some("fixture-model".into()),
+            model_provider: None,
             service_tier: Some("default".into()),
+            model_context_window: None,
+            rate_limits: None,
             source_digest: "same-event-digest".into(),
             collector_version: "0.1.0".into(),
         };
