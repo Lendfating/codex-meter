@@ -1,40 +1,68 @@
 # Codex Meter
 
-Codex Meter 是一个完全本地运行的 Codex 用量与订阅窗口估算工具。每台机器独立采集、独立存储，不上传数据，也不与其他机器同步。
+Codex Meter 是一个本地小工具，用来回答两个问题：
 
-当前仓库按执行计划完成了阶段 0，并完成阶段 1 的领域模型与 SQLite 存储基础。JSONL、App Server、ccusage 采集器、HTTP API 和业务页面仍按计划留在后续阶段。
+1. 当前账号在每天、分钟、模型和 Session 维度用了多少 Token，官方额度百分比如何变化；
+2. 不同订阅的周窗口大约对应多少 Credit。
+
+后端和页面由同一个 Rust 进程提供，不需要分别启动前后端。数据只保存在本机 SQLite：JSONL 是历史和本机明细主来源，App Server 是当前账号/官方配额补充，`ccusage` 只作为独立校验结果。未知模型或价格显示为“待定”，不会用 0 冒充已计算金额。
+
+## 启动与验证
+
+```sh
+./scripts/codex-meter-service.sh start
+./scripts/codex-meter-service.sh status
+```
+
+浏览器打开 <http://127.0.0.1:18778/>。停止、重启和查看日志：
+
+```sh
+./scripts/codex-meter-service.sh stop
+./scripts/codex-meter-service.sh restart
+./scripts/codex-meter-service.sh logs
+```
+
+脚本默认执行 `cargo build --offline`，默认数据库是
+`.runtime/codex-meter-seven.sqlite`，默认从 `~/.codex` 读取
+`sessions/` 和 `archived_sessions/`。常用覆盖项：
+
+```sh
+CODEX_METER_DB=/tmp/codex-meter.sqlite \
+CODEX_HOME="$HOME/.codex" \
+CODEX_METER_PORT=18778 \
+./scripts/codex-meter-service.sh start
+```
+
+已有构建产物时可设置 `CODEX_METER_SKIP_BUILD=1`。App Server 只在明确设置
+`CODEX_METER_APP_SERVER_ON_BOOT=1` 时启用；不启用也可以完整查看 JSONL 历史。
+
+需要保存独立的 ccusage 对账时，明确打开它（每次会跑 API/订阅两套价格、
+daily/session 和 `auto`/`standard`，共 8 个小结果）：
+
+```sh
+CODEX_METER_CCUSAGE_ON_BOOT=1 \
+CODEX_METER_CCUSAGE_BIN=/path/to/ccusage \
+./scripts/codex-meter-service.sh restart
+```
+
+也可以设置 `CODEX_METER_CCUSAGE_ON_REFRESH=1`，让 `POST /api/refresh` 同时
+执行对账。结果会脱敏后写入 `source_ccusage`，页面一的“JSONL vs ccusage”
+直接显示 Token/美元差值；ccusage 失败不会阻断 JSONL 主报告。
+
+## 最小 API
+
+- `GET /api/health`：服务和 7 张正式表是否正常；
+- `GET /api/report?date=YYYY-MM-DD`：页面一、二、三所需的全部投影；
+- `POST /api/refresh`：重新扫描 JSONL；
+- `POST /api/capacities`：保存人工确认的 20/100/200 美元容量。
+
+页面只有三块：用量（日历、趋势、分钟/模型/Session 和 JSONL/ccusage 对账）、容量估算（Reset 窗口候选和人工确认值）、计算说明（公式、价格版本和数据来源）。日、分钟、模型、Session、Reset 窗口都从 7 张事实表在内存中聚合，不再维护一套对应的派生表。
 
 ## 文档
 
-- [调研结论](docs/RESEARCH_FINDINGS.md)：Codex JSONL、App Server、账号/API 识别、Credit 与配额字段的边界。
-- [最终设计](docs/FINAL_DESIGN.md)：系统架构、采集频率、数据库、计算规则、价格版本和前端页面。
-- [精细化设计审查](docs/DESIGN_REVIEW.md)：阻断级风险、修订结论和剩余边界。
-- [执行计划](docs/IMPLEMENTATION_PLAN.md)：按阶段实施、测试和验收标准。
-- [阶段 1 实施记录](docs/PHASE_1.md)：SQLite schema、领域模型和阶段门禁结果。
+- [最小执行计划](docs/MINIMAL_IMPLEMENTATION_PLAN.md)：当前唯一执行边界和阶段门禁；
+- [最终设计](docs/FINAL_DESIGN.md)：完整目标和页面信息；
+- [数据来源参考](docs/DATA_SOURCE_REFERENCE.md)：JSONL、App Server、ccusage 的字段调研；
+- [执行状态](docs/MINIMAL_IMPLEMENTATION_STATUS.md)：每个阶段的测试和验收证据。
 
-## 已固定的核心决策
-
-1. JSONL 是本机 token、模型、Fast 状态和历史配额样本的主事件源。
-2. Codex App Server 保留，用于实时账号身份、登录方式、套餐、账号总配额和切换事件。
-3. `ccusage` 作为不修改源码的黑盒计算引擎，通过 JSON 输出提供去重后的 token 与成本；系统不 fork 它。
-4. 订阅周窗口容量不是官方可读取字段，20/100/200 美元套餐的容量由人工确认后保存。
-5. App Server/JSONL 中的窗口百分比是账号总量；`ccusage` 计算的是本机日志量，两者不可直接混为一条指标。
-6. 2026 年 7 月价格变更按人工确定的 `2026-08-01T00:00:00-07:00` 生效，即北京时间 `2026-08-01 15:00:00`。
-7. 认证类型、服务端 `plan_type`、本地容量档位是三个独立维度；UI 可把已确认的 API/provider 汇总为 `Other/API`，数据库保留原始值。
-8. 订阅 Credit 与 API 等价美元使用两套独立价格方案和 Fast 倍率，不能复用一个 `costUSD` 数字。
-
-## 阶段 0 资产
-
-- `fixtures/app-server/`：由本机 Codex CLI 生成的 App Server schema 快照。
-- `fixtures/jsonl/`：仅保留结构化白名单字段的脱敏 JSONL fixture。
-- `fixtures/ccusage/`：固定的 `ccusage` 版本与 `codex daily/session --json` 输出契约。
-- `fixtures/mappings/`：当前本机历史 `model_provider=pro` 且 `plan_type=null` 到 `Other/API` 的人工映射。
-- `scripts/`：fixture 生成与隐私门禁脚本。
-
-## 阶段 1 资产
-
-- `migrations/0001_initial.sql`：版本化 SQLite schema，包含原始观察、快照、派生结果、价格/容量版本、标定和审计表。
-- `src/domain/`：账号身份、上下文区间、token/配额/ccusage 模型、来源质量元数据和北京时间展示转换。
-- `src/storage/`：SQLite 连接池、WAL/foreign keys/busy timeout 配置、可重复迁移和存储写入接口。
-
-阶段 1 已验证重复原始事件不会重复计数，账号上下文区间允许相邻但拒绝重叠；后续采集器和业务 API 尚未实现。
+项目不上传本地 JSONL、账号信息或 Token 数据，也不会自动修改订阅容量结论。

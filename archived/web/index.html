@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Meter · Usage Report</title>
+  <style>
+    :root{--ink:#20231f;--muted:#74786e;--paper:#f5f6f1;--card:#fff;--line:#e5e8df;--green:#2d7559;--green-soft:#d9eee4;--amber:#b6782b;--red:#b44f45;--blue:#4e79a7;--shadow:0 12px 36px #263d2b0e}
+    *{box-sizing:border-box}
+    body{margin:0;color:var(--ink);background:var(--paper);font:14px/1.55 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    button,input{font:inherit}
+    button{cursor:pointer}
+    .app-shell{display:flex;min-height:100vh}
+    .sidebar{width:64px;flex:none;background:#1f2822;color:#edf5ee;transition:width .2s ease;overflow:hidden;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:5}
+    .app-shell.menu-open .sidebar{width:226px}
+    .sidebar-top{height:76px;display:flex;align-items:center;gap:12px;padding:14px 12px;border-bottom:1px solid #ffffff18}
+    .sidebar-toggle{width:38px;height:38px;border:0;border-radius:10px;color:#edf5ee;background:#ffffff12;font-size:20px;line-height:1}
+    .sidebar-toggle:hover{background:#ffffff22}
+    .side-nav{padding:16px 10px;display:grid;gap:7px}
+    .nav-item{border:0;background:transparent;color:#b9c7bc;display:flex;align-items:center;gap:12px;width:100%;padding:11px 10px;border-radius:10px;text-align:left;font-weight:700;white-space:nowrap}
+    .nav-item:hover{background:#ffffff12;color:#fff}
+    .nav-item.active{background:#d9eee4;color:#1f5c43}
+    .nav-icon{width:22px;text-align:center;font-size:17px;flex:none}
+    .nav-label{opacity:0;transition:opacity .15s}
+    .app-shell.menu-open .nav-label{opacity:1}
+    .main-shell{min-width:0;flex:1}
+    .topbar{min-height:76px;padding:14px 30px;display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--line);background:#f8f9f5cc;backdrop-filter:blur(10px);position:sticky;top:0;z-index:4}
+    .topbar-left{display:flex;align-items:center;gap:18px;min-width:0}
+    .page-brand{display:flex;align-items:center;gap:9px;white-space:nowrap}
+    .page-brand-mark{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:#202923;color:#f4f6ef;font-size:11px;font-weight:900;letter-spacing:-.08em}
+    .page-brand-name{font-size:14px;font-weight:900;letter-spacing:-.03em}
+    .page-heading{min-width:0}
+    .topbar h1{margin:0;font-size:22px;letter-spacing:-.035em}
+    .topbar p{margin:3px 0 0;color:var(--muted);font-size:12px}
+    .top-actions{display:flex;align-items:center;gap:12px;text-align:right}
+    .account-badge strong{display:block;font-size:14px}
+    .account-badge > span{color:var(--muted);font-size:11px}
+    .account-badge .pill{color:var(--green);font-size:11px}
+    .account-badge .provider-line{display:block;color:var(--muted);font-size:11px}
+    .refresh{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:9px;padding:7px 11px;font-weight:700}
+    .refresh:hover{border-color:var(--green);color:var(--green)}
+    .page-content{max-width:1520px;margin:auto;padding:28px 30px 60px}
+    .panel{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:20px}
+    .section-heading{display:flex;justify-content:space-between;align-items:baseline;gap:14px;margin:28px 0 12px}
+    .section-heading h2{margin:0;font-size:18px;letter-spacing:-.02em}
+    .section-heading p{margin:0;color:var(--muted);font-size:12px}
+    .window-summary{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,.8fr);gap:16px}
+    .window-main{min-height:190px}
+    .eyebrow{margin:0;color:var(--green);font-size:11px;font-weight:900;letter-spacing:.12em;text-transform:uppercase}
+    .window-title{display:flex;align-items:baseline;gap:12px;margin:9px 0 4px}
+    .window-title h2{margin:0;font-size:26px;letter-spacing:-.04em}
+    .pill{display:inline-flex;align-items:center;padding:4px 9px;border-radius:99px;background:var(--green-soft);color:var(--green);font-size:12px;font-weight:800}
+    .pill.warn{background:#f8e7e3;color:var(--red)}
+    .window-range{color:var(--muted);font-size:12px}
+    .window-range b{color:var(--ink)}
+    .window-capacity-callout{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:16px;padding:12px 14px;border:1px solid #cfe5d8;border-radius:12px;background:#f1faf5}
+    .window-capacity-callout span{display:block;color:var(--green);font-size:11px;font-weight:900;letter-spacing:.04em}
+    .window-capacity-callout strong{display:block;font-size:18px;white-space:nowrap}
+    .window-capacity-callout small{display:block;color:var(--muted);font-size:10px;text-align:right}
+    .window-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:20px}
+    .stat-card{min-width:0}
+    .stat-card strong{display:block;font-size:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .stat-card span{display:block;color:var(--muted);font-size:11px}
+    .stat-card small{display:block;color:var(--muted);font-size:10px;line-height:1.35;white-space:normal}
+    .window-side{display:flex;flex-direction:column;justify-content:space-between;text-align:right}
+    .window-side strong{font-size:17px}
+    .window-side p{margin:5px 0;color:var(--muted);font-size:12px}
+    .scope-tabs{display:flex;gap:8px;margin:24px 0 8px;border-bottom:1px solid var(--line)}
+    .scope-tab{border:0;background:transparent;color:var(--muted);padding:10px 15px;border-bottom:2px solid transparent;font-weight:800}
+    .scope-tab:hover{color:var(--ink)}
+    .scope-tab.active{color:var(--ink);border-color:var(--green)}
+    .split-overview{display:grid;grid-template-columns:minmax(510px,1.05fr) minmax(0,1.45fr);gap:16px}
+    .calendar-panel{min-width:0}
+    .calendar-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}
+    .calendar-head h3{margin:0;font-size:15px}
+    .calendar-head span{color:var(--muted);font-size:11px}
+    .calendar-legend{display:flex;justify-content:space-between;gap:10px;margin:-4px 0 11px;color:var(--muted);font-size:10px;white-space:nowrap}
+    .weekday-row,.calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+    .weekday-row{margin-bottom:6px;color:var(--muted);font-size:10px;text-align:center}
+    .calendar-grid .blank{min-height:112px}
+    .day-cell{min-height:112px;border:1px solid var(--line);border-radius:10px;padding:8px;background:#fafbf8;text-align:left;color:var(--ink);transition:.15s}
+    .day-cell:hover,.day-cell.selected{border-color:var(--green);transform:translateY(-1px);box-shadow:0 0 0 2px var(--green-soft)}
+    .day-cell.no-data{background:#fafbf8;color:#a2a79e}
+    .day-cell.tone-1{background:#edf7f0}.day-cell.tone-2{background:#d9eee0}.day-cell.tone-3{background:#b8dec8}.day-cell.tone-4{background:#8ec5a8;color:#143b2a}
+    .day-cell .day-number{display:block;font-size:11px;color:var(--muted)}
+    .day-cell strong{display:block;margin-top:6px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .day-cell small{display:block;color:var(--muted);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .day-cell .day-token{color:var(--ink);font-weight:800}
+    .day-cell .day-percent{margin-top:2px;color:var(--green);font-weight:800}
+    .day-cell .day-missing{color:#a2a79e}
+    .day-cell.tone-4 .day-number,.day-cell.tone-4 small{color:#2c644a}
+    .chart-panel{min-width:0}
+    .chart-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+    .chart-toolbar h3{margin:0;font-size:15px}
+    .metric-picker{display:flex;gap:5px;flex-wrap:wrap}
+    .metric-button{border:1px solid var(--line);background:#fafbf8;color:var(--muted);border-radius:7px;padding:4px 8px;font-size:11px;font-weight:700}
+    .metric-button.active{background:var(--green-soft);border-color:#a8d5bb;color:var(--green)}
+    .chart-note{margin:0 0 7px;color:var(--muted);font-size:11px}
+    .chart-legend{display:flex;gap:12px;flex-wrap:wrap;margin:0 0 8px;color:var(--muted);font-size:10px}
+    .chart-legend span{display:inline-flex;align-items:center;gap:5px}
+    .chart-legend i{width:18px;height:3px;border-radius:99px;background:var(--green);display:inline-block}
+    .chart-legend i.blue{background:var(--blue)}
+    .chart-legend i.amber{background:var(--amber)}
+    .chart-legend i.bar{height:9px;border-radius:3px;background:#80b99b}
+    .line-chart{width:100%;height:280px;display:block}
+    .line-chart .grid{stroke:#e7ebe3;stroke-width:1}
+    .line-chart .axis-label{fill:#8a9185;font-size:10px}
+    .line-chart .line{fill:none;stroke:var(--green);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+    .line-chart .line-secondary{fill:none;stroke:var(--blue);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+    .line-chart .line-dashed{fill:none;stroke:var(--amber);stroke-width:2;stroke-dasharray:5 5;stroke-linecap:round}
+    .line-chart .reset-marker{stroke:#b9c6bb;stroke-width:1.5;stroke-dasharray:4 4}
+    .line-chart .point{fill:#fff;stroke:var(--green);stroke-width:2}
+    .line-chart .point-secondary{fill:#fff;stroke:var(--blue);stroke-width:2}
+    .line-chart .bar-local{fill:#80b99b;opacity:.85}
+    .line-chart .bar-official{fill:#d4a05d;opacity:.75}
+    .chart-empty{height:280px;display:grid;place-items:center;border:1px dashed var(--line);border-radius:12px;color:var(--muted);font-size:12px;text-align:center;padding:20px}
+    .source-stack{display:grid;gap:8px}
+    .source-row{display:grid;grid-template-columns:170px repeat(7,minmax(92px,1fr));gap:8px;align-items:center;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fafbf8;overflow:auto}
+    .source-name strong{display:block;font-size:12px}
+    .source-name span{display:block;color:var(--muted);font-size:10px}
+    .source-value{min-width:0}
+    .source-value strong{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .source-value span{display:block;color:var(--muted);font-size:10px}
+    .source-row.ccusage{background:#fbf8f2}
+    .source-row.ccusage .source-name strong{color:var(--amber)}
+    .detail-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+    .detail-panel h3{margin:0;font-size:15px}
+    .detail-panel .panel-subtitle{margin:3px 0 10px;color:var(--muted);font-size:11px}
+    .table-wrap{overflow:auto;border:1px solid var(--line);border-radius:11px}
+    .table{border-collapse:collapse;width:100%;min-width:620px}
+    .table th,.table td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:top}
+    .table th{color:var(--muted);font-size:10px;font-weight:900;background:#fafbf8}
+    .table tr:last-child td{border-bottom:0}
+    .table .number{text-align:right;font-variant-numeric:tabular-nums}
+    .empty-state{min-height:180px;display:grid;place-items:center;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:12px;padding:20px}
+    .details-toggle{margin-top:10px;border:0;background:transparent;color:var(--green);font-size:11px;font-weight:800;padding:0}
+    .window-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+    .window-card{border:1px solid var(--line);border-radius:12px;background:#fafbf8;padding:13px;text-align:left;color:var(--ink)}
+    .window-card:hover,.window-card.selected{border-color:var(--green);box-shadow:0 0 0 2px var(--green-soft)}
+    .window-card .window-date{font-weight:800;font-size:12px}
+    .window-card .window-sub{color:var(--muted);font-size:10px;margin-top:3px}
+    .window-card .window-values{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}
+    .window-card .window-values strong{display:block;font-size:13px}
+    .window-card .window-values span{display:block;color:var(--muted);font-size:10px}
+    .range-panel{display:grid;gap:12px}
+    .dual-slider{position:relative;height:76px;margin:2px 10px 0}
+    .range-track,.range-fill{position:absolute;left:0;right:0;top:35px;height:8px;border-radius:99px}
+    .range-track{background:#e4e7e1;border:1px solid #c9cec5}
+    .range-fill{background:var(--green)}
+    .range-input{position:absolute;left:0;top:24px;width:100%;height:30px;margin:0;background:transparent;appearance:none;-webkit-appearance:none;pointer-events:none;accent-color:var(--green)}
+    .range-input::-webkit-slider-runnable-track{height:8px;background:transparent}
+    .range-input::-moz-range-track{height:8px;background:transparent}
+    .range-input::-webkit-slider-thumb{width:22px;height:22px;margin-top:-7px;border:0;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px #d9eee4;appearance:none;-webkit-appearance:none;pointer-events:auto;cursor:grab}
+    .range-input::-moz-range-thumb{width:22px;height:22px;border:0;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px #d9eee4;pointer-events:auto;cursor:grab}
+    .range-input.range-end{z-index:4}
+    .range-input.range-start{z-index:3}
+    .range-bubble{position:absolute;top:0;transform:translateX(-50%);padding:3px 7px;border-radius:7px;background:#202923;color:#fff;font-size:10px;font-weight:800;white-space:nowrap;pointer-events:none}
+    .range-bubble.start{background:var(--green)}
+    .range-bubble.end{background:#4e79a7}
+    .range-boundaries{display:flex;justify-content:space-between;gap:12px;color:var(--muted);font-size:11px;font-weight:700}
+    .capacity-chart{min-height:360px}
+    .capacity-selection{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:12px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fafbf8}
+    .capacity-selection strong{display:block;font-size:14px}
+    .capacity-selection span{display:block;color:var(--muted);font-size:11px}
+    .capacity-selection .refresh{white-space:nowrap}
+    .capacity-estimate{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}
+    .estimate-card{padding:11px 12px;border:1px solid #cfe5d8;border-radius:11px;background:#f1faf5}
+    .estimate-card strong{display:block;font-size:16px}
+    .estimate-card span{display:block;color:var(--muted);font-size:10px}
+    .capacity-boundary-note{margin:8px 0 0;color:var(--amber);font-size:11px}
+    .combined-chart-title{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:4px}
+    .combined-chart-title h3{margin:0;font-size:15px}
+    .combined-chart-title p{margin:0;color:var(--muted);font-size:11px}
+    .capacity-legend{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 8px;color:var(--muted);font-size:11px}
+    .capacity-legend span{display:inline-flex;align-items:center;gap:5px}
+    .capacity-legend i{width:18px;height:3px;border-radius:99px;background:var(--green);display:inline-block}
+    .capacity-legend i.blue{background:var(--blue)}
+    .capacity-legend i.amber{background:var(--amber)}
+    .combined-chart{width:100%;height:300px;display:block}
+    .combined-chart .grid{stroke:#e7ebe3;stroke-width:1}
+    .combined-chart .axis-label{fill:#8a9185;font-size:10px}
+    .combined-chart .line{fill:none;stroke:var(--green);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+    .combined-chart .line-blue{fill:none;stroke:var(--blue);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+    .combined-chart .point{fill:#fff;stroke:var(--green);stroke-width:2}
+    .combined-chart .point-blue{fill:#fff;stroke:var(--blue);stroke-width:2}
+    .capacity-comparison{margin-top:16px}
+    .capacity-comparison h3{margin:0 0 8px;font-size:14px}
+    .capacity-comparison .table{min-width:760px}
+    .capacity-inputs{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .capacity-input{border:1px solid var(--line);border-radius:12px;padding:14px;background:#fafbf8}
+    .capacity-input label{display:block;font-weight:800;font-size:12px}
+    .capacity-input input{width:100%;margin:9px 0;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff}
+    .method-copy{max-width:950px}
+    .method-copy p{color:var(--muted);margin:8px 0}
+    .method-copy h3{margin:24px 0 10px;font-size:15px}
+    .muted{color:var(--muted)}
+    .warn{color:var(--amber)}
+    .ok{color:var(--green)}
+    footer{margin-top:30px;border-top:1px solid var(--line);padding-top:13px;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:11px}
+    .loading{padding:100px;text-align:center;color:var(--muted)}
+    .error{margin:30px;padding:18px;border:1px solid #ecc5be;border-radius:12px;background:#f8e7e3;color:#8e3d37}
+    @media(max-width:1120px){.window-summary,.split-overview{grid-template-columns:1fr}.window-side{text-align:left;min-height:130px}.source-row{grid-template-columns:150px repeat(7,120px)}}
+    .session-name strong{display:block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .session-name small{display:block;color:var(--muted);font-size:10px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    @media(max-width:820px){.topbar{padding:16px 18px}.page-content{padding:20px 18px 44px}.detail-grid{grid-template-columns:1fr}.capacity-inputs{grid-template-columns:1fr}.window-stats{grid-template-columns:repeat(2,1fr)}.top-actions .account-badge{display:none}.page-brand-name{font-size:13px}}
+    @media(max-width:620px){.sidebar{width:54px}.sidebar-top{padding:12px 8px}.sidebar-toggle{width:36px}.app-shell.menu-open .sidebar{width:210px}.topbar{align-items:flex-start}.topbar h1{font-size:18px}.window-title h2{font-size:22px}.dual-slider{margin-left:2px;margin-right:2px}.calendar-grid .blank{min-height:64px}.day-cell{min-height:64px;padding:5px}.day-cell small{display:none}.line-chart{height:220px}.combined-chart{height:240px}.chart-empty{height:220px}}
+  </style>
+</head>
+<body>
+  <div id="app"><div class="loading">正在读取本机 JSONL…</div></div>
+  <script>
+  (function(){
+    var app = document.getElementById('app');
+    var report = null;
+    var page = 'usage';
+    var usageScope = 'day';
+    var selectedDate = null;
+    var selectedWindow = 0;
+    var menuOpen = false;
+    var dayMetric = 'token';
+    var minuteMetric = 'token';
+    var weekMetric = 'official';
+    var capacityStart = 0;
+    var capacityEnd = 0;
+    var capacityRangeReady = false;
+    var capacityEstimateVisible = false;
+
+    function esc(value){
+      return String(value == null ? '' : value).replace(/[&<>'"]/g,function(c){
+        return {'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c];
+      });
+    }
+    function number(value){
+      if(value == null || !Number.isFinite(Number(value))) return null;
+      return Number(value);
+    }
+    function fmt(value,digits){
+      var n=number(value);
+      return n == null ? '—' : n.toLocaleString('zh-CN',{maximumFractionDigits:digits == null ? 2 : digits});
+    }
+    function compactNumber(value,digits){
+      var n=number(value);
+      if(n==null) return null;
+      var abs=Math.abs(n),unit='',scale=1;
+      if(abs>=1e12){unit='T';scale=1e12}else if(abs>=1e9){unit='B';scale=1e9}else if(abs>=1e6){unit='M';scale=1e6}else if(abs>=1e3){unit='K';scale=1e3}
+      if(!unit) return Math.round(n).toLocaleString('zh-CN');
+      var places=digits == null ? (abs>=1e8?1:abs>=1e6?1:2) : digits;
+      return (n/scale).toLocaleString('zh-CN',{maximumFractionDigits:places})+unit;
+    }
+    function tokens(value){var n=number(value);return n==null?'待定':compactNumber(n)}
+    function money(value){
+      var n=number(value);
+      if(n == null) return '<span class="warn">待定</span>';
+      if(n !== 0 && Math.abs(n)<1) return '$<1';
+      return '$'+Math.round(n).toLocaleString('zh-CN');
+    }
+    function creditText(value){var n=number(value);return n==null?'待定':compactNumber(n,1)}
+    function creditValue(value){var n=number(value);return n==null?'<span class="warn">待补数据</span>':creditText(n)}
+    function percent(value){var n=number(value);return n == null ? '待定' : fmt(n,0)+'%'}
+    function percentPrecise(value){var n=number(value);return n == null ? '待定' : fmt(n,1)+'%'}
+    function parseDateKey(key){
+      if(!key) return null;
+      var p=String(key).split('-').map(Number);
+      if(p.length!==3 || p.some(function(v){return !Number.isFinite(v)})) return null;
+      return new Date(p[0],p[1]-1,p[2]);
+    }
+    function dateKey(date){
+      if(!date) return null;
+      return [date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0')].join('-');
+    }
+    function shiftDate(key,days){
+      var date=parseDateKey(key)||new Date();
+      date.setDate(date.getDate()+days);
+      return dateKey(date);
+    }
+    function dateLabel(key,withYear){
+      if(!key) return '待补数据';
+      return withYear ? String(key).replace('-','/').replace('-','/') : key.slice(5).replace('-','/');
+    }
+    function dateTime(ms){
+      if(!number(ms)) return '待补数据';
+      return new Date(Number(ms)).toLocaleString('zh-CN',{hour12:false});
+    }
+    function shortTime(ms){
+      if(!number(ms)) return '待补数据';
+      return new Date(Number(ms)).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});
+    }
+    function duration(ms){
+      var n=number(ms);
+      if(n==null || n<0) return '待补数据';
+      var hours=Math.floor(n/3600000), days=Math.floor(hours/24);
+      if(days) return days+'天 '+(hours%24)+'小时';
+      if(hours) return hours+'小时';
+      return Math.max(1,Math.floor(n/60000))+'分钟';
+    }
+    function latestDate(){
+      var days=(report && report.days || []).slice().sort(function(a,b){return String(a.date).localeCompare(String(b.date))});
+      return selectedDate || (days.length ? days[days.length-1].date : dateKey(new Date()));
+    }
+    function daysMap(){
+      return new Map((report && report.days || []).map(function(d){return [d.date,d]}));
+    }
+    function sortedDays(){
+      return (report && report.days || []).slice().sort(function(a,b){return String(a.date).localeCompare(String(b.date))});
+    }
+    function displayWindows(){
+      var source=(report && report.quota_windows || []).slice().sort(function(a,b){return Number(a.reset_at_ms||0)-Number(b.reset_at_ms||0)}),groups=[];
+      source.forEach(function(win){
+        var key=[win.account_key || '',win.limit || '',win.window_kind || ''].join('|'),last=groups.length?groups[groups.length-1]:null;
+        if(last && last.key===key && number(last.value.reset_at_ms)!=null && number(win.reset_at_ms)!=null && Math.abs(Number(last.value.reset_at_ms)-Number(win.reset_at_ms))<=300000){
+          var value=last.value;
+          value.start_at_ms=Math.min(Number(value.start_at_ms||win.start_at_ms||0),Number(win.start_at_ms||value.start_at_ms||0)) || value.start_at_ms;
+          value.end_at_ms=Math.max(Number(value.end_at_ms||win.end_at_ms||0),Number(win.end_at_ms||value.end_at_ms||0)) || value.end_at_ms;
+          value.reset_at_ms=Math.max(Number(value.reset_at_ms||0),Number(win.reset_at_ms||0)) || value.reset_at_ms;
+          if(number(win.percent_delta)!=null) value.percent_delta=Math.max(number(value.percent_delta)||0,number(win.percent_delta));
+          if(number(win.local_tokens)!=null) value.local_tokens=Math.max(number(value.local_tokens)||0,number(win.local_tokens));
+          if(number(win.local_credit)!=null) value.local_credit=Math.max(number(value.local_credit)||0,number(win.local_credit));
+          value.quality_flags=(value.quality_flags || []).concat(win.quality_flags || []).filter(function(item,index,array){return array.indexOf(item)===index});
+        }else{
+          groups.push({key:key,value:Object.assign({},win)});
+        }
+      });
+      return groups.map(function(group){return group.value});
+    }
+    function currentWindow(){
+      var windows=displayWindows();
+      var reset=report && report.current && report.current.official && report.current.official.resets_at_ms;
+      windows.sort(function(a,b){
+        if(reset && a.reset_at_ms && b.reset_at_ms) return Math.abs(a.reset_at_ms-reset)-Math.abs(b.reset_at_ms-reset);
+        return Number(a.start_at_ms||0)-Number(b.start_at_ms||0);
+      });
+      return windows.length ? windows[0] : null;
+    }
+    function windowDuration(win){
+      var start=number(win && win.start_at_ms),end=number(win && win.end_at_ms);
+      return start==null || end==null ? '待补数据' : duration(end-start);
+    }
+    function pageTitle(){
+      return page==='usage' ? '用量报告' : page==='capacity' ? '容量估算' : '计算说明';
+    }
+    function pageSubtitle(){
+      return page==='usage' ? '先按日期或 Reset 窗口选择范围，再查看 Session 和时间变化' : page==='capacity' ? '拖动时间区间，观察官方窗口与本机消耗的关系' : '当前运行中的 Token、Credit 和价格口径';
+    }
+    function planLabel(plan){
+      var code=String(plan || '').toLowerCase();
+      if(code==='plus') return 'Plus（20 美元）';
+      if(code==='pro') return 'Pro（200 美元）';
+      if(code==='team') return 'Team';
+      return plan ? String(plan) : '订阅待识别';
+    }
+    function confirmedCapacity(){
+      var current=report && report.current || {},account=current.account || {},direct=firstNumber(account,['weekly_credit','credit_capacity','capacity_credit']) || firstNumber(current,['weekly_credit','credit_capacity','capacity_credit']);
+      if(direct!=null) return direct;
+      var code=String(account.plan || '').toLowerCase();
+      var expected=code==='plus'?'usd20':code==='pro'?'usd200':null;
+      if(!expected) return null;
+      var row=(report.capacities || []).find(function(item){return item.plan_code===expected && item.status==='confirmed' && number(item.credit)!=null});
+      return row ? number(row.credit) : null;
+    }
+    function firstNumber(object,names){
+      if(!object) return null;
+      for(var i=0;i<names.length;i++){
+        var value=number(object[names[i]]);
+        if(value!=null) return value;
+      }
+      return null;
+    }
+    function accountTokenForDay(day){
+      var direct=firstNumber(day,['account_tokens','account_token','account_daily_tokens']);
+      if(direct!=null) return direct;
+      var rows=report && report.current && report.current.account_daily_tokens || [],date=day && day.date,found=null;
+      rows.forEach(function(row){
+        if(String(row.date || '').slice(0,10)!==String(date || '').slice(0,10) || number(row.tokens)==null) return;
+        if(!found || Number(row.observed_at_ms||0)>=Number(found.observed_at_ms||0)) found=row;
+      });
+      return found ? number(found.tokens) : null;
+    }
+    function dayCapacity(day){
+      var explicit=firstNumber(day,['capacity_credit','plan_credit','subscription_credit','credit_capacity','weekly_credit']);
+      if(explicit!=null) return explicit;
+      var code=String((day && (day.plan_code || day.plan)) || '').toLowerCase();
+      if(!code) return null;
+      var expected=code==='plus'?'usd20':code==='pro'?'usd200':code==='team'?'usd100':code;
+      var row=(report && report.capacities || []).find(function(item){return item.plan_code===expected && item.status==='confirmed' && number(item.credit)!=null});
+      return row ? number(row.credit) : null;
+    }
+    function localDailyPercent(day){
+      var direct=firstNumber(day,['local_daily_percent','local_percent_of_plan','local_percent_of_capacity','local_percent_delta','local_used_percent','local_percent','local_share_percent']);
+      if(direct!=null) return direct;
+      var credit=number(day && day.credit),capacity=dayCapacity(day);
+      return credit!=null && capacity!=null && capacity>0 ? credit/capacity*100 : null;
+    }
+    function officialDailyPercent(day){
+      var direct=firstNumber(day,['official_daily_percent','official_percent_delta','account_percent_delta','official_used_percent_delta']);
+      if(direct!=null) return direct;
+      var start=number(day && day.official_percent_start),end=number(day && day.official_percent_end);
+      return start!=null && end!=null && end>=start ? end-start : null;
+    }
+    function hasResetBoundary(previous,current){
+      if(!previous || !current) return false;
+      if(current.reset===true || current.reset_boundary===true) return true;
+      if(current.reset_generation!=null && previous.reset_generation!=null && String(current.reset_generation)!==String(previous.reset_generation)) return true;
+      var previousEnd=number(previous.official_percent_end),currentStart=number(current.official_percent_start),currentEnd=number(current.official_percent_end);
+      if(previousEnd!=null && currentStart!=null && currentStart+20<previousEnd) return true;
+      return previousEnd!=null && currentEnd!=null && currentEnd+20<previousEnd;
+    }
+    function resetIndices(rows){
+      var result=[];
+      (rows || []).forEach(function(row,index){if(index>0 && hasResetBoundary(rows[index-1],row)) result.push(index)});
+      return result;
+    }
+    function cumulativeByReset(rows,values){
+      var running=0,result=[],boundaries=resetIndices(rows),boundarySet=new Set(boundaries);
+      values.forEach(function(value,index){
+        if(boundarySet.has(index)) running=0;
+        var n=number(value);
+        if(n==null){result.push(null);return}
+        running+=n;result.push(running);
+      });
+      return result;
+    }
+    function accountTokenThroughYesterday(win){
+      var rows=report && report.current && report.current.account_daily_tokens || [],today=dateKey(new Date()),startKey=win && win.start_at_ms?dateKey(new Date(Number(win.start_at_ms))):null,latest={};
+      rows.forEach(function(row){
+        var date=String(row.date || '').slice(0,10),value=number(row.tokens);
+        if(date && date<today && (!startKey || date>=startKey) && value!=null && (!latest[date] || Number(row.observed_at_ms||0)>=Number(latest[date].observed_at_ms||0))) latest[date]=row;
+      });
+      var values=Object.keys(latest).map(function(key){return number(latest[key].tokens)}).filter(function(value){return value!=null});
+      return values.length ? values.reduce(function(sum,value){return sum+value},0) : null;
+    }
+    function windowAggregate(win){
+      var current=report && report.current || {},days=sortedDays(),startKey=win && win.start_at_ms ? dateKey(new Date(Number(win.start_at_ms))) : null,endKey=win && (win.end_at_ms || win.reset_at_ms) ? dateKey(new Date(Number(win.end_at_ms || win.reset_at_ms))) : null;
+      var scoped=days.filter(function(day){return (!startKey || day.date>=startKey) && (!endKey || day.date<=endKey)}),apiValues=scoped.map(function(day){return number(day.api_usd)}).filter(function(value){return value!=null}),tokenValues=scoped.map(function(day){return number(day.usage && day.usage.total)}).filter(function(value){return value!=null});
+      var api=apiValues.length?apiValues.reduce(function(sum,value){return sum+value},0):null,derivedToken=tokenValues.length?tokenValues.reduce(function(sum,value){return sum+value},0):null;
+      return {token:(win && win.local_tokens)!=null?win.local_tokens:derivedToken,credit:(current.local_window && current.local_window.credit)!=null?current.local_window.credit:win && win.local_credit,api:api,percent:current.local_window && current.local_window.percent,capacity:confirmedCapacity()};
+    }
+    function navItem(id,icon,label){
+      return '<button class="nav-item '+(page===id?'active':'')+'" data-page="'+id+'" aria-label="'+esc(label)+'"><span class="nav-icon">'+icon+'</span><span class="nav-label">'+label+'</span></button>';
+    }
+    function sidebar(){
+      return '<aside class="sidebar"><div class="sidebar-top"><button class="sidebar-toggle" id="menu-toggle" aria-label="展开或折叠菜单">☰</button></div><nav class="side-nav">'+navItem('usage','▦','用量报告')+navItem('capacity','◫','容量估算')+navItem('method','ƒ','计算说明')+'</nav></aside>';
+    }
+    function topbar(){
+      var current=report && report.current || {}, account=current.account || {}, official=current.official || {};
+      var available=official.used_percent != null;
+      return '<header class="topbar"><div class="topbar-left"><div class="page-brand"><div class="page-brand-mark">CM</div><strong class="page-brand-name">Codex Meter</strong></div><div class="page-heading"><h1>'+pageTitle()+'</h1><p>'+pageSubtitle()+'</p></div></div><div class="top-actions"><div class="account-badge"><strong>当前订阅：'+esc(planLabel(account.plan))+' <span class="pill '+(available?'':'warn')+'">'+(available?'官方可用':'官方待观测')+'</span></strong><span class="provider-line">'+esc(account.provider || 'provider 未观测')+' · '+esc(current.timezone || 'Asia/Shanghai')+'</span></div><button class="refresh" id="refresh">刷新 JSONL</button></div></header>';
+    }
+    function statCard(label,value,sub){
+      return '<div class="stat-card"><strong>'+value+'</strong><span>'+esc(label)+'</span>'+(sub?'<small>'+sub+'</small>':'')+'</div>';
+    }
+    function windowSummary(){
+      var current=report.current || {}, official=current.official || {}, win=currentWindow();
+      var reset=official.resets_at_ms || (win && win.reset_at_ms);
+      var start=win && win.start_at_ms;
+      var now=Date.now();
+      var remaining=reset && reset>now ? duration(reset-now) : reset ? '已到 Reset 或等待刷新' : '待补数据';
+      var elapsed=start && now>start ? duration(now-start) : '待补数据';
+      var aggregate=windowAggregate(win),accountToken=accountTokenThroughYesterday(win),capacity=aggregate.capacity;
+      var accountTokenValue=accountToken==null?'<span class="warn">待补数据</span>':tokens(accountToken);
+      var creditSub=capacity==null?'周额度待确认':'周额度 '+creditText(capacity)+' Credit';
+      var capacityValue=capacity==null?'<span class="warn">待确认</span>':creditText(capacity)+' Credit';
+      return '<section class="window-summary"><div class="panel window-main"><p class="eyebrow">当前窗口 / ACCOUNT WINDOW</p><div class="window-title"><h2>'+percent(official.used_percent)+' 已用</h2><span class="pill '+(official.remaining_percent==null?'warn':'')+'">剩余 '+percent(official.remaining_percent)+'</span></div><div class="window-range"><b>'+dateTime(start)+'</b>　→　<b>'+dateTime(reset)+'</b><span>　窗口起点 / 下次 Reset</span></div><div class="window-capacity-callout"><div><span>当前套餐周额度</span><strong>'+capacityValue+'</strong></div><small>'+esc(planLabel(current.account && current.account.plan))+'<br>确认值用于本机周占比</small></div><div class="window-stats">'+statCard('账号 Token（窗口参考）',accountTokenValue,'从窗口起始日到昨天；首日可能多算，今天未结算')+statCard('本机 Token（窗口累计）',tokens(aggregate.token))+statCard('本机 API 美元（窗口累计）',money(aggregate.api))+statCard('本机 Credit（窗口累计）',creditValue(aggregate.credit),creditSub)+statCard('本机周占比',percent(aggregate.percent),'本机 Credit / 当前套餐周额度')+'</div></div><div class="panel window-side"><div><p class="eyebrow">官方窗口状态</p><strong>已过 '+elapsed+'</strong><strong>距下次 Reset '+remaining+'</strong><p>'+esc(official.source || 'none')+' · 官方百分比历史优先来自 JSONL</p></div><div><p>账号 Token 是日级参考；本机 Token、API 美元和 Credit 按 JSONL 主事实累计。缺失字段保持待补数据。</p></div></div></section>';
+    }
+    function scopeTabs(){
+      return '<div class="scope-tabs"><button class="scope-tab '+(usageScope==='day'?'active':'')+'" data-scope="day">按日期</button><button class="scope-tab '+(usageScope==='window'?'active':'')+'" data-scope="window">按周窗口</button></div>';
+    }
+    function metricValue(day,metric){
+      if(!day) return null;
+      if(metric==='token') return day.usage && day.usage.total;
+      if(metric==='api') return day.api_usd;
+      if(metric==='credit') return day.credit;
+      if(metric==='official') return officialDailyPercent(day);
+      return null;
+    }
+    function metricLabel(metric){
+      return metric==='token'?'Token':metric==='api'?'API 美元':metric==='credit'?'Credit':'周窗口%';
+    }
+    function metricPicker(current,scope){
+      var list=[['token','Token'],['api','API 美元'],['credit','Credit'],['official','周窗口%']];
+      return '<div class="metric-picker">'+list.map(function(item){return '<button class="metric-button '+(current===item[0]?'active':'')+'" data-metric-scope="'+scope+'" data-metric="'+item[0]+'">'+item[1]+'</button>'}).join('')+'</div>';
+    }
+    function lineChart(values,labels,aria,dateKeys,breakIndices){
+      var numeric=values.map(function(value){return number(value)});
+      var valid=numeric.filter(function(value){return value!=null});
+      if(!valid.length) return '<div class="chart-empty">暂无可绘制数据<br><span>先保留图表位置，待对应字段采集后填充</span></div>';
+      var width=760,height=280,pad={left:46,right:16,top:18,bottom:30};
+      var min=Math.min.apply(null,valid),max=Math.max.apply(null,valid);
+      if(min===max){min=0;max=max || 1}
+      if(min>0) min=0;
+      var span=max-min || 1;
+      var x=function(i){return pad.left+i*(width-pad.left-pad.right)/Math.max(values.length-1,1)};
+      var y=function(value){return height-pad.bottom-(value-min)*(height-pad.top-pad.bottom)/span};
+      var html='<svg class="line-chart" viewBox="0 0 '+width+' '+height+'" role="img" aria-label="'+esc(aria||'趋势图')+'">';
+      for(var g=0;g<4;g++){var gy=pad.top+g*(height-pad.top-pad.bottom)/3;var gv=max-(max-min)*g/3;html+='<line class="grid" x1="'+pad.left+'" y1="'+gy+'" x2="'+(width-pad.right)+'" y2="'+gy+'"></line><text class="axis-label" x="5" y="'+(gy+4)+'">'+esc(fmt(gv,2))+'</text>'}
+      var breakSet=new Set(breakIndices || []),chunks=[],chunk='';
+      values.forEach(function(value,index){
+        if(number(value)==null || breakSet.has(index)){if(chunk){chunks.push(chunk);chunk=''};if(number(value)==null)return}
+        chunk+=(chunk?' ':'')+x(index)+','+y(Number(value));
+      });
+      if(chunk) chunks.push(chunk);
+      chunks.forEach(function(points){html+='<polyline class="line" points="'+points+'"></polyline>'});
+      values.forEach(function(value,index){if(number(value)!=null) html+='<circle class="point" cx="'+x(index)+'" cy="'+y(Number(value))+'" r="3" '+(dateKeys && dateKeys[index]?'data-chart-date="'+esc(dateKeys[index])+'" tabindex="0"':'')+'></circle>'});
+      var labelIndexes=[0,Math.floor((labels.length-1)/2),labels.length-1].filter(function(v,i,a){return a.indexOf(v)===i});
+      labelIndexes.forEach(function(index){if(labels[index]!=null) html+='<text class="axis-label" text-anchor="'+(index===0?'start':index===labels.length-1?'end':'middle')+'" x="'+x(index)+'" y="'+(height-7)+'">'+esc(labels[index])+'</text>'});
+      return html+'</svg>';
+    }
+    function calendarDays(){
+      var latest=latestDate(), latestDateObj=parseDateKey(latest)||new Date(), first=shiftDate(latest, -29), firstObj=parseDateKey(first);
+      var map=daysMap(), values=[], cursor=new Date(firstObj);
+      while(cursor<=latestDateObj){var key=dateKey(cursor);values.push({key:key,data:map.get(key)||null});cursor.setDate(cursor.getDate()+1)}
+      var leading=(firstObj.getDay()+6)%7;
+      return Array.from({length:leading},function(){return {blank:true}}).concat(values);
+    }
+    function tone(day){
+      if(!day) return 'no-data';
+      var value=number(day.credit);
+      if(value==null) value=number(day.api_usd);
+      if(value==null) return '';
+      return value>75?'tone-4':value>50?'tone-3':value>25?'tone-2':'tone-1';
+    }
+    function dashTokens(value){return number(value)==null?'—':tokens(value)}
+    function dashMoney(value){return number(value)==null?'—':money(value)}
+    function dailyWindowPercentChart(days){
+      var labels=days.map(function(day){return dateLabel(day.date)}),officialDaily=days.map(officialDailyPercent),localDaily=days.map(localDailyPercent);
+      var remaining=days.map(function(day){var direct=firstNumber(day,['official_remaining_percent','account_remaining_percent']);return direct!=null?direct:(number(day.official_percent_end)!=null?100-number(day.official_percent_end):null)});
+      var officialCum=cumulativeByReset(days,officialDaily),localCum=cumulativeByReset(days,localDaily);
+      var valid=officialDaily.concat(localDaily,remaining,officialCum,localCum).some(function(value){return number(value)!=null});
+      var legend='<div class="chart-legend"><span><i class="bar"></i>当天本机使用</span><span><i class="amber bar"></i>当天账号使用</span><span><i></i>官方剩余</span><span><i class="blue"></i>官方累计已用</span><span><i class="amber"></i>本机累计周占比</span></div>';
+      if(!valid) return legend+'<div class="chart-empty">暂无周窗口百分比观测<br><span>后端提供每日套餐额度和官方增量后，这里显示柱状图与 Reset 分段累计线</span></div>';
+      var width=760,height=300,pad={left:46,right:16,top:20,bottom:32},plotWidth=width-pad.left-pad.right,plotHeight=height-pad.top-pad.bottom;
+      var x=function(index){return pad.left+index*plotWidth/Math.max(days.length-1,1)};
+      var y=function(value){return height-pad.bottom-Math.max(0,Math.min(100,Number(value)))*plotHeight/100};
+      var barWidth=Math.max(4,Math.min(14,plotWidth/Math.max(days.length,1)*.24)),html=legend+'<svg class="line-chart" viewBox="0 0 '+width+' '+height+'" role="img" aria-label="周窗口百分比每日柱状图和 Reset 累计趋势">';
+      [100,50,0].forEach(function(value){var gy=y(value);html+='<line class="grid" x1="'+pad.left+'" y1="'+gy+'" x2="'+(width-pad.right)+'" y2="'+gy+'"></line><text class="axis-label" x="5" y="'+(gy+4)+'">'+value+'%</text>'});
+      resetIndices(days).forEach(function(index){html+='<line class="reset-marker" x1="'+x(index)+'" y1="'+pad.top+'" x2="'+x(index)+'" y2="'+(height-pad.bottom)+'"></line>'});
+      days.forEach(function(day,index){
+        var center=x(index),local=number(localDaily[index]),official=number(officialDaily[index]);
+        if(local!=null) html+='<rect class="bar-local" x="'+(center-barWidth-1)+'" y="'+y(local)+'" width="'+barWidth+'" height="'+Math.max(1,y(0)-y(local))+'"></rect>';
+        if(official!=null) html+='<rect class="bar-official" x="'+(center+1)+'" y="'+y(official)+'" width="'+barWidth+'" height="'+Math.max(1,y(0)-y(official))+'"></rect>';
+      });
+      var boundaries=resetIndices(days);
+      seriesChunks(remaining,x,y,boundaries).forEach(function(points){html+='<polyline class="line" points="'+points+'"></polyline>'});
+      seriesChunks(officialCum,x,y,boundaries).forEach(function(points){html+='<polyline class="line-secondary" points="'+points+'"></polyline>'});
+      seriesChunks(localCum,x,y,boundaries).forEach(function(points){html+='<polyline class="line-dashed" points="'+points+'"></polyline>'});
+      remaining.forEach(function(value,index){if(number(value)!=null)html+='<circle class="point" cx="'+x(index)+'" cy="'+y(value)+'" r="3" data-chart-date="'+esc(days[index].date)+'" tabindex="0"></circle>'});
+      [0,Math.floor((labels.length-1)/2),labels.length-1].filter(function(value,index,all){return labels[value]!=null && all.indexOf(value)===index}).forEach(function(index){html+='<text class="axis-label" text-anchor="'+(index===0?'start':index===labels.length-1?'end':'middle')+'" x="'+x(index)+'" y="'+(height-8)+'">'+esc(labels[index])+'</text>'});
+      return html+'</svg>';
+    }
+    function calendarPanel(){
+      var cells=calendarDays();
+      return '<section class="panel calendar-panel"><div class="calendar-head"><h3>最近 30 天</h3><span>默认选中 '+esc(selectedDate || latestDate())+'</span></div><div class="calendar-legend"><span>T 本机 / 账号</span><span>$ API 美元 · C Credit</span><span>Δ% 本机 / 官方 · 本机按当日套餐额度</span></div><div class="weekday-row"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class="calendar-grid">'+cells.map(function(cell){if(cell.blank)return '<span class="blank"></span>';var d=cell.data,localToken=d && d.usage && d.usage.total,accountToken=accountTokenForDay(d),localPct=localDailyPercent(d),officialPct=officialDailyPercent(d);return '<button class="day-cell '+tone(d)+' '+(cell.key===selectedDate?'selected':'')+'" data-date="'+esc(cell.key)+'" aria-label="'+esc(dateLabel(cell.key)+' 本机 Token '+dashTokens(localToken)+'，账号 Token '+dashTokens(accountToken))+'"><span class="day-number">'+esc(dateLabel(cell.key))+'</span><strong class="day-token">T '+dashTokens(localToken)+' / '+dashTokens(accountToken)+'</strong><small>'+dashMoney(d && d.api_usd)+' · C '+(d?creditText(d.credit):'—')+'</small><small class="day-percent">Δ% '+(localPct==null?'—':percent(localPct))+' / '+(officialPct==null?'—':percent(officialPct))+'</small></button>'}).join('')+'</div></section>';
+    }
+    function dayTrendPanel(){
+      var days=sortedDays(), labels=days.map(function(d){return dateLabel(d.date)}), values=days.map(function(d){return metricValue(d,dayMetric)});
+      var chart=dayMetric==='official'?dailyWindowPercentChart(days):lineChart(values,labels,metricLabel(dayMetric)+' 日期趋势',days.map(function(day){return day.date}),resetIndices(days));
+      return '<section class="panel chart-panel"><div class="chart-toolbar"><h3>按日期每日消耗</h3>'+metricPicker(dayMetric,'day')+'</div><p class="chart-note">'+(dayMetric==='official'?'柱状图是当天本机 / 账号使用，折线是从最近 Reset 开始的累计；Reset 前后不连线。':'当前指标展示每天的消耗增量；缺失字段保持空值，不补成 0。')+'</p>'+chart+'</section>';
+    }
+    function usageForDay(day){
+      return day && day.usage || {};
+    }
+    function comparisonValue(date,kind){
+      var rows=(report.validation && report.validation.comparisons || []).filter(function(row){return row.date===date});
+      var row=rows.find(function(item){var metric=String(item.metric||'').toLowerCase();return kind==='total' ? metric.indexOf('total_tokens')>=0 : metric.indexOf('api_usd')>=0});
+      return row ? row.ccusage : null;
+    }
+    function sourceValue(label,value,sub){
+      return '<div class="source-value"><strong>'+value+'</strong><span>'+esc(sub || label)+'</span></div>';
+    }
+    function sourceRows(day){
+      var usage=usageForDay(day), date=day && day.date;
+      var ccTotal=comparisonValue(date,'total'),ccApi=comparisonValue(date,'api');
+      var comparisons=(report.validation && report.validation.comparisons || []).filter(function(row){return row.date===date});
+      var status=comparisons.length?'已保存对账结果':'暂无验证结果';
+      return '<div class="source-stack">'+
+        '<div class="source-row"><div class="source-name"><strong>JSONL 主事实</strong><span>本机 Token 事件</span></div>'+sourceValue('总 Token',tokens(usage.total),'总量')+sourceValue('输入',tokens(usage.input),'非缓存/输入')+sourceValue('缓存读',tokens(usage.cached),'缓存读取')+sourceValue('输出',tokens(usage.output),'输出')+sourceValue('推理',tokens(usage.reasoning),'推理')+sourceValue('Credit',creditValue(day && day.credit),'Subscription Credit')+sourceValue('API USD',money(day && day.api_usd),'API 等价美元')+'</div>'+
+        '<div class="source-row ccusage"><div class="source-name"><strong>ccusage 独立校验</strong><span>'+esc(status)+'</span></div>'+sourceValue('总 Token',tokens(ccTotal),'总量')+sourceValue('输入','待补数据','等待校验字段')+sourceValue('缓存读','待补数据','等待校验字段')+sourceValue('输出','待补数据','等待校验字段')+sourceValue('推理','待补数据','等待校验字段')+sourceValue('Credit','待补数据','校验结果')+sourceValue('API USD',money(ccApi),'校验结果')+'</div>'+
+      '</div>';
+    }
+    function sessionTable(rows){
+      if(!rows || !rows.length) return '<div class="empty-state">这一天没有可展示的 Session</div>';
+      return '<div class="table-wrap"><table class="table"><thead><tr><th>对话</th><th>关系</th><th>模型</th><th>Fast</th><th class="number">Token</th><th class="number">Credit</th><th class="number">USD</th></tr></thead><tbody>'+rows.map(function(row){var title=row.title || '未命名对话',id=row.session_id || 'Session ID 待补数据';return '<tr><td class="session-name" title="'+esc(id)+'"><strong>'+esc(title.slice(0,48))+'</strong><small>'+esc(id)+'</small></td><td>'+esc(row.relation || 'unknown')+'</td><td>'+esc((row.models || []).join(', ') || 'unknown')+'</td><td>'+((row.fast==null)?'—':row.fast?'Fast':'Standard')+'</td><td class="number">'+tokens(row.usage && row.usage.total)+'</td><td class="number">'+creditValue(row.credit)+'</td><td class="number">'+money(row.api_usd)+'</td></tr>'}).join('')+'</tbody></table></div>';
+    }
+    function modelTable(rows){
+      if(!rows || !rows.length) return '<div class="empty-state">暂无模型汇总</div>';
+      return '<div class="table-wrap"><table class="table"><thead><tr><th>模型</th><th>Tier</th><th class="number">请求</th><th class="number">Token</th><th class="number">Credit</th><th class="number">USD</th></tr></thead><tbody>'+rows.map(function(row){return '<tr><td>'+esc(row.model || 'unknown')+'</td><td>'+esc(row.tier || 'unknown')+'</td><td class="number">'+fmt(row.requests,0)+'</td><td class="number">'+tokens(row.usage && row.usage.total)+'</td><td class="number">'+creditValue(row.credit)+'</td><td class="number">'+money(row.api_usd)+'</td></tr>'}).join('')+'</tbody></table></div>';
+    }
+    function accountDailyReference(rows){
+      return '<details class="panel"><summary class="details-toggle">账号每日 Token（参考，不参与 Credit 或容量计算）</summary>'+(rows && rows.length ? '<div class="table-wrap"><table class="table"><thead><tr><th>日期</th><th class="number">账号 Token</th><th>来源</th><th>观测时间</th></tr></thead><tbody>'+rows.slice(-30).map(function(row){return '<tr><td>'+esc(row.date)+'</td><td class="number">'+tokens(row.tokens)+'</td><td>'+esc(row.source || '待补数据')+'</td><td>'+dateTime(row.observed_at_ms)+'</td></tr>'}).join('')+'</tbody></table></div>' : '<div class="empty-state">暂无账号级每日 Token 快照</div>')+'</details>';
+    }
+    function minuteTable(rows){
+      if(!rows || !rows.length) return '<div class="empty-state">这一天没有分钟级事实</div>';
+      return '<details><summary class="details-toggle">展开分钟明细表</summary><div class="table-wrap"><table class="table"><thead><tr><th>时间</th><th class="number">Token</th><th class="number">Credit</th><th class="number">API USD</th><th>官方 %</th></tr></thead><tbody>'+rows.map(function(row){return '<tr><td>'+shortTime(row.minute_start_ms)+'</td><td class="number">'+tokens(row.usage && row.usage.total)+'</td><td class="number">'+creditValue(row.credit)+'</td><td class="number">'+money(row.api_usd)+'</td><td>'+percent(row.official_percent)+'</td></tr>'}).join('')+'</tbody></table></div></details>';
+    }
+    function minuteSeries(rows,metric){
+      if(metric==='official') return (rows || []).map(function(row){return firstNumber(row,['official_percent','official_remaining_percent'])});
+      var running=0,seen=false;
+      return (rows || []).map(function(row){
+        var value=metric==='token'?number(row.usage && row.usage.total):metric==='api'?number(row.api_usd):number(row.credit);
+        if(value==null) return null;
+        running+=value;seen=true;return seen?running:null;
+      });
+    }
+    function minuteChartPanel(day){
+      var rows=report.selected_day && report.selected_day.minutes || [];
+      var labels=rows.map(function(row){return shortTime(row.minute_start_ms)}),values=minuteSeries(rows,minuteMetric),note=minuteMetric==='official'?'官方百分比按观测点显示；Reset 时剩余线跳变，累计线重新开始。':'Token、API 美元和 Credit 从当天 0 开始累计。';
+      if(minuteMetric==='token' && accountTokenForDay(day)!=null) note+=' 账号 Token 只有日级参考，不绘制分钟斜率。';
+      return '<section class="panel detail-panel"><div class="chart-toolbar"><h3>分钟级变化</h3>'+metricPicker(minuteMetric,'minute')+'</div><p class="panel-subtitle">选择日：'+esc(day && day.date || selectedDate || '待补数据')+' · '+note+'</p>'+lineChart(values,labels,metricLabel(minuteMetric)+' 分钟趋势',null,resetIndices(rows))+minuteTable(rows)+'</section>';
+    }
+    function dayScope(){
+      var day=(report.days || []).find(function(item){return item.date===selectedDate}) || (report.selected_day && report.selected_day.date ? (report.days || []).find(function(item){return item.date===report.selected_day.date}) : null) || sortedDays().slice(-1)[0] || {};
+      return '<div class="section-heading"><h2>按日期查看</h2><p>'+esc(day.date || selectedDate || '待补数据')+'</p></div><section class="split-overview">'+calendarPanel()+dayTrendPanel()+'</section><div class="section-heading"><h2>'+esc(day.date || selectedDate || '选择一天')+' · JSONL 与 ccusage 对比</h2><p>同一组字段上下对齐，方便人工验证；缺失字段保持待补数据</p></div>'+sourceRows(day)+accountDailyReference(report.current && report.current.account_daily_tokens || [])+'<div class="section-heading"><h2>当天详情</h2><p>左侧看哪个 Session 消耗最多，右侧看分钟变化</p></div><section class="detail-grid"><section class="panel detail-panel"><h3>Session 列表</h3><p class="panel-subtitle">对话标题、主/子关系、模型、Fast、Token、Credit、美元</p>'+sessionTable(report.selected_day && report.selected_day.sessions || [])+'<details><summary class="details-toggle">展开模型汇总</summary>'+modelTable(report.selected_day && report.selected_day.models || [])+'</details></section>'+minuteChartPanel(day)+'</section>';
+    }
+    function windowCards(){
+      var windows=displayWindows();
+      if(!windows.length) return '<div class="empty-state">暂无 Reset 窗口数据。先保留窗口卡片区域，待 JSONL/App Server 样本补齐。</div>';
+      var cards=windows.map(function(win,index){
+        var startKey=win.start_at_ms?dateKey(new Date(Number(win.start_at_ms))):null,endKey=win.end_at_ms?dateKey(new Date(Number(win.end_at_ms))):null;
+        var accountToken=sortedDays().filter(function(day){return (!startKey || day.date>=startKey) && (!endKey || day.date<=endKey)}).map(accountTokenForDay).filter(function(value){return value!=null}).reduce(function(sum,value){return sum+value},0) || null;
+        var localPct=number(win.local_percent)!=null?win.local_percent:(number(win.local_credit)!=null && confirmedCapacity()!=null ? Number(win.local_credit)/confirmedCapacity()*100:null);
+        var api=number(win.local_api_usd)==null?'—':money(win.local_api_usd);
+        return '<button class="window-card '+(index===selectedWindow?'selected':'')+'" data-window-select="'+index+'"><div class="window-date">'+esc(dateTime(win.start_at_ms))+' → '+esc(dateTime(win.reset_at_ms))+'</div><div class="window-sub">'+esc(win.limit || win.window_kind || '窗口')+' · '+(win.shared==null?'共享状态待确认':win.shared?'可能共享':'仅本机')+'</div><div class="window-values"><div><strong>T '+tokens(win.local_tokens)+' / '+dashTokens(accountToken)+'</strong><span>本机 / 账号 Token</span></div><div><strong>'+api+' · C '+creditText(win.local_credit)+'</strong><span>API 美元 / Credit</span></div><div><strong>'+percent(localPct)+' / '+percent(win.percent_delta)+'</strong><span>本机 / 官方窗口变化</span></div><div><strong>'+windowDuration(win)+'</strong><span>持续时间</span></div></div></button>';
+      }).join('');
+      return '<div class="window-grid">'+cards+'</div>';
+    }
+    function windowTrendPanel(){
+      var windows=displayWindows(),labels=windows.map(function(win){return shortTime(win.reset_at_ms)}),values=windows.map(function(win){return weekMetric==='official'?win.percent_delta:weekMetric==='token'?win.local_tokens:weekMetric==='api'?win.local_api_usd:win.local_credit});
+      return '<section class="panel chart-panel"><div class="chart-toolbar"><h3>按 Reset 窗口变化</h3>'+metricPicker(weekMetric,'week')+'</div><p class="chart-note">一个点代表一个真实 Reset 窗口；窗口内累计从 0 开始，跨窗口不连接。</p>'+lineChart(values,labels,metricLabel(weekMetric)+' 窗口趋势')+'</section>';
+    }
+    function windowSourceRows(win){
+      if(!win) return '<div class="source-stack"><div class="source-row"><div class="source-name"><strong>JSONL 主事实</strong><span>暂无选中窗口</span></div>'+sourceValue('总 Token','待补数据','窗口')+sourceValue('输入','待补数据','窗口')+sourceValue('缓存读','待补数据','窗口')+sourceValue('输出','待补数据','窗口')+sourceValue('推理','待补数据','窗口')+sourceValue('Credit','待补数据','窗口')+sourceValue('API USD','待补数据','窗口')+'</div><div class="source-row ccusage"><div class="source-name"><strong>ccusage 独立校验</strong><span>等待窗口级校验</span></div>'+sourceValue('总 Token','待补数据','校验')+sourceValue('输入','待补数据','校验')+sourceValue('缓存读','待补数据','校验')+sourceValue('输出','待补数据','校验')+sourceValue('推理','待补数据','校验')+sourceValue('Credit','待补数据','校验')+sourceValue('API USD','待补数据','校验')+'</div></div>';
+      return '<div class="source-stack"><div class="source-row"><div class="source-name"><strong>JSONL 主事实</strong><span>'+esc(dateTime(win.start_at_ms))+' → '+esc(dateTime(win.reset_at_ms))+'</span></div>'+sourceValue('总 Token',tokens(win.local_tokens),'本机窗口 Token')+sourceValue('输入','待补数据','窗口内分类')+sourceValue('缓存读','待补数据','窗口内分类')+sourceValue('输出','待补数据','窗口内分类')+sourceValue('推理','待补数据','窗口内分类')+sourceValue('Credit',creditValue(win.local_credit),'本机窗口 Credit')+sourceValue('API USD',money(win.local_api_usd),'窗口 API 等价')+'</div><div class="source-row ccusage"><div class="source-name"><strong>ccusage 独立校验</strong><span>ccusage 只提供日 / Session 对照，窗口级不强行换算</span></div>'+sourceValue('总 Token','待补数据','窗口级校验')+sourceValue('输入','待补数据','窗口级校验')+sourceValue('缓存读','待补数据','窗口级校验')+sourceValue('输出','待补数据','窗口级校验')+sourceValue('推理','待补数据','窗口级校验')+sourceValue('Credit','待补数据','窗口级校验')+sourceValue('API USD','待补数据','窗口级校验')+'</div></div>';
+    }
+    function windowMinuteChartPanel(win){
+      var rows=win && win.minutes || [],values=minuteSeries(rows,weekMetric),labels=rows.map(function(row){return shortTime(row.minute_start_ms)}),note=weekMetric==='official'?'官方百分比按窗口观测点显示；Reset 处重新开始。':'窗口内 Token、API 美元和 Credit 从窗口起点 0 开始累计。';
+      return '<section class="panel detail-panel"><div class="chart-toolbar"><h3>窗口内时间变化</h3>'+metricPicker(weekMetric,'week')+'</div><p class="panel-subtitle">'+esc(note)+'</p>'+lineChart(values,labels,metricLabel(weekMetric)+' 窗口分钟趋势',null,rows.map(function(row,index){return index>0 && row.reset_boundary?index:null}).filter(function(value){return value!=null}))+minuteTable(rows)+'</section>';
+    }
+    function windowScope(){
+      var windows=displayWindows(),win=windows[selectedWindow] || null;
+      return '<div class="section-heading"><h2>按周窗口查看</h2><p>两次 Reset 之间为一个统计区间</p></div><section class="split-overview"><section class="panel calendar-panel"><div class="calendar-head"><h3>Reset 窗口</h3><span>选择一个窗口</span></div>'+windowCards()+'</section>'+windowTrendPanel()+'</section><div class="section-heading"><h2>选中窗口 · JSONL 与 ccusage 对比</h2><p>窗口粒度沿用日期详情的双行结构；ccusage 没有窗口级结果时保持待补</p></div>'+windowSourceRows(win)+'<div class="section-heading"><h2>窗口详情</h2><p>真实结果表中的 root Session 和分钟记录</p></div><section class="detail-grid"><section class="panel detail-panel"><h3>窗口内 Session 列表</h3><p class="panel-subtitle">对话标题、主/子关系、模型、Fast、Token、Credit、美元</p>'+sessionTable(win && win.sessions || [])+'</section>'+windowMinuteChartPanel(win)+'</section>';
+    }
+    function auditFooter(){
+      var audit=report.audit || {};
+      return '<footer><span>扫描 '+fmt(audit.files,0)+' 个文件 · '+fmt(audit.events,0)+' 个 Token 事件 · '+fmt(audit.duplicates,0)+' 个重复 · '+fmt(audit.sessions,0)+' 个 Session</span><span>JSONL 主事实 / App Server 官方账号 / ccusage 独立校验</span></footer>';
+    }
+    function usagePage(){
+      return '<main class="page-content">'+windowSummary()+scopeTabs()+(usageScope==='day'?dayScope():windowScope())+auditFooter()+'</main>';
+    }
+    function resetBoundaryBetween(days,start,end){
+      if(!days || start>=end) return false;
+      var boundaries=resetIndices(days);
+      return boundaries.some(function(index){return index>start && index<=end});
+    }
+    function segmentStartIndex(days,index){
+      var boundaries=resetIndices(days),start=0;
+      boundaries.forEach(function(boundary){if(boundary<=index) start=boundary});
+      return start;
+    }
+    function segmentEndIndex(days,index){
+      var boundaries=resetIndices(days),end=Math.max(0,days.length-1);
+      for(var i=0;i<boundaries.length;i++){if(boundaries[i]>index){end=boundaries[i]-1;break}}
+      return end;
+    }
+    function keepCapacityRangeInReset(days,moving){
+      if(!resetBoundaryBetween(days,capacityStart,capacityEnd)) return;
+      if(moving==='start') capacityStart=segmentStartIndex(days,capacityEnd);
+      else capacityEnd=segmentEndIndex(days,capacityStart);
+    }
+    function capacityRangeBlocked(days){return resetBoundaryBetween(days,capacityStart,capacityEnd)}
+    function capacityEstimate(days){
+      var candidates=[];
+      for(var start=0;start<days.length-1;start++){
+        var credit=0,official=0,complete=true;
+        for(var end=start+1;end<days.length;end++){
+          if(resetBoundaryBetween(days,start,end)) break;
+          var day=days[end],dayCredit=number(day.credit),dayOfficial=officialDailyPercent(day);
+          if(dayCredit!=null) credit+=dayCredit;
+          else complete=false;
+          if(dayOfficial!=null) official+=dayOfficial;
+          else complete=false;
+          if(complete && credit>0 && official>=5){
+            candidates.push({value:credit/(official/100),start:start,end:end,credit:credit,official:official});
+          }
+        }
+      }
+      if(!candidates.length) return null;
+      candidates.sort(function(a,b){return b.value-a.value});
+      return {best:candidates[0],count:candidates.length,min:candidates[candidates.length-1].value,max:candidates[0].value};
+    }
+    function ensureCapacityRange(){
+      var length=sortedDays().length;
+      if(!length){capacityStart=0;capacityEnd=0;capacityRangeReady=false;return}
+      if(!capacityRangeReady){capacityEnd=length-1;capacityStart=Math.max(0,capacityEnd-29);capacityRangeReady=true;return}
+      if(capacityEnd<0 || capacityEnd>=length) capacityEnd=length-1;
+      if(capacityStart<0 || capacityStart>=length) capacityStart=Math.max(0,capacityEnd-29);
+      if(capacityStart>capacityEnd) capacityStart=capacityEnd;
+    }
+    function dualRangeControl(days){
+      var max=Math.max(days.length-1,0),start=days[capacityStart],end=days[capacityEnd];
+      var startPct=max ? capacityStart/max*100 : 0,endPct=max ? capacityEnd/max*100 : 100;
+      return '<div class="dual-slider" aria-label="选择容量估算时间范围"><div class="range-track"></div><div class="range-fill" style="left:'+startPct+'%;right:'+(100-endPct)+'%"></div><input class="range-input range-start" id="capacity-start" aria-label="开始日期" type="range" min="0" max="'+max+'" value="'+capacityStart+'"><input class="range-input range-end" id="capacity-end" aria-label="结束日期" type="range" min="0" max="'+max+'" value="'+capacityEnd+'"><span class="range-bubble start" style="left:'+startPct+'%">'+esc(start ? start.date : '待补数据')+'</span><span class="range-bubble end" style="left:'+endPct+'%">'+esc(end ? end.date : '待补数据')+'</span></div><div class="range-boundaries"><span>开始：'+esc(start ? start.date : '待补数据')+'</span><span>结束：'+esc(end ? end.date : '待补数据')+'</span></div>';
+    }
+    function seriesChunks(values,x,y,breakIndices){
+      var breakSet=new Set(breakIndices || []),chunks=[],chunk='';
+      values.forEach(function(value,index){
+        if(number(value)==null || breakSet.has(index)){if(chunk){chunks.push(chunk);chunk=''};if(number(value)==null)return}
+        chunk+=(chunk?' ':'')+x(index)+','+y(Number(value));
+      });
+      if(chunk) chunks.push(chunk);
+      return chunks;
+    }
+    function combinedCapacityChart(days){
+      var labels=days.map(function(day){return dateLabel(day.date)}),officialEnd=days.map(function(day){return number(day.official_percent_end)!=null?number(day.official_percent_end):null}),remaining=days.map(function(day){var value=firstNumber(day,['official_remaining_percent','account_remaining_percent']);return value!=null?value:(number(day.official_percent_end)!=null?100-number(day.official_percent_end):null)}),officialCum=cumulativeByReset(days,days.map(officialDailyPercent)),localShare=cumulativeByReset(days,days.map(localDailyPercent)),credits=cumulativeByReset(days,days.map(function(day){return day.credit}));
+      var maxCredit=Math.max.apply(null,credits.map(function(value){return number(value)}).filter(function(value){return value!=null}).concat([1])),valid=remaining.concat(officialEnd,officialCum,localShare,credits).some(function(value){return number(value)!=null});
+      var width=860,height=320,pad={left:52,right:62,top:42,bottom:36},plotHeight=height-pad.top-pad.bottom;
+      var x=function(index){return pad.left+index*(width-pad.left-pad.right)/Math.max(days.length-1,1)},yPercent=function(value){return height-pad.bottom-Math.max(0,Math.min(100,Number(value)))*plotHeight/100},yCredit=function(value){return height-pad.bottom-Number(value)*plotHeight/maxCredit};
+      var legend='<div class="capacity-legend"><span><i></i>官方剩余%</span><span><i class="blue"></i>官方累计已用%</span><span><i class="amber"></i>本机累计周占比</span><span><i class="blue"></i>本机累计 Credit（右轴）</span></div>';
+      var html='<div class="combined-chart-title"><h3>窗口使用图表</h3><p>左轴百分比 · 右轴本机 Credit；Reset 处累计重新开始</p></div>'+legend;
+      if(!valid) return html+'<div class="chart-empty">暂无可绘制数据<br><span>官方百分比、本机 Credit 或每日套餐额度待补</span></div>';
+      html+='<svg class="combined-chart" viewBox="0 0 '+width+' '+height+'" role="img" aria-label="官方百分比、本机周占比与 Credit 双轴图">';
+      [100,50,0].forEach(function(value){var gy=yPercent(value);html+='<line class="grid" x1="'+pad.left+'" y1="'+gy+'" x2="'+(width-pad.right)+'" y2="'+gy+'"></line><text class="axis-label" x="5" y="'+(gy+4)+'">'+value+'%</text><text class="axis-label" text-anchor="end" x="'+(width-5)+'" y="'+(gy+4)+'">'+esc(creditText(maxCredit*(value/100)))+'</text>'});
+      resetIndices(days).forEach(function(index){html+='<line class="reset-marker" x1="'+x(index)+'" y1="'+pad.top+'" x2="'+x(index)+'" y2="'+(height-pad.bottom)+'"></line>'});
+      var boundaries=resetIndices(days);
+      seriesChunks(remaining,x,yPercent,boundaries).forEach(function(points){html+='<polyline class="line" points="'+points+'"></polyline>'});
+      seriesChunks(officialCum,x,yPercent,boundaries).forEach(function(points){html+='<polyline class="line-secondary" points="'+points+'"></polyline>'});
+      seriesChunks(localShare,x,yPercent,boundaries).forEach(function(points){html+='<polyline class="line-dashed" points="'+points+'"></polyline>'});
+      seriesChunks(credits,x,yCredit,boundaries).forEach(function(points){html+='<polyline class="line-blue" points="'+points+'"></polyline>'});
+      remaining.forEach(function(value,index){if(number(value)!=null)html+='<circle class="point" cx="'+x(index)+'" cy="'+yPercent(value)+'" r="3"></circle>'});
+      credits.forEach(function(value,index){if(number(value)!=null)html+='<circle class="point-blue" cx="'+x(index)+'" cy="'+yCredit(value)+'" r="3"></circle>'});
+      [0,Math.floor((labels.length-1)/2),labels.length-1].filter(function(value,index,all){return labels[value]!=null && all.indexOf(value)===index}).forEach(function(index){html+='<text class="axis-label" text-anchor="'+(index===0?'start':index===labels.length-1?'end':'middle')+'" x="'+x(index)+'" y="'+(height-8)+'">'+esc(labels[index])+'</text>'});
+      return html+'</svg>';
+    }
+    function capacityComparisonTable(days){
+      if(!days.length) return '';
+      return '<details class="panel capacity-comparison"><summary class="details-toggle">展开区间对比明细</summary><div class="table-wrap"><table class="table"><thead><tr><th>日期</th><th class="number">官方剩余</th><th class="number">官方日变化</th><th class="number">本机日 Token</th><th class="number">本机日 Credit</th><th class="number">本机 API 美元</th></tr></thead><tbody>'+days.map(function(day){var token=number(day.usage && day.usage.total),credit=number(day.credit),api=number(day.api_usd);return '<tr><td>'+esc(day.date)+'</td><td class="number">'+(number(day.official_percent_end)!=null?percent(100-number(day.official_percent_end)):'—')+'</td><td class="number">'+(officialDailyPercent(day)!=null?percent(officialDailyPercent(day)):'—')+'</td><td class="number">'+tokens(token)+'</td><td class="number">'+creditText(credit)+'</td><td class="number">'+(number(api)!=null?money(api):'—')+'</td></tr>'}).join('')+'</tbody></table></div></details>';
+    }
+    function capacityWindowsDetails(){
+      var windows=displayWindows();
+      if(!windows.length) return '<div class="empty-state">暂无 Reset 窗口证据</div>';
+      return '<details class="panel"><summary class="details-toggle">展开 Reset 窗口明细</summary><div class="table-wrap"><table class="table"><thead><tr><th>窗口</th><th>Reset</th><th class="number">官方变化</th><th class="number">本机 Token</th><th class="number">本机 Credit</th><th>共享</th></tr></thead><tbody>'+windows.map(function(win){return '<tr><td>'+esc(win.limit || win.window_kind || '窗口')+'</td><td>'+dateTime(win.reset_at_ms)+'</td><td class="number">'+percent(win.percent_delta)+'</td><td class="number">'+tokens(win.local_tokens)+'</td><td class="number">'+creditText(win.local_credit)+'</td><td>'+((win.shared==null)?'待确认':win.shared?'是':'否')+'</td></tr>'}).join('')+'</tbody></table></div></details>';
+    }
+    function capacityInput(code,label){
+      var existing=(report.capacities || []).find(function(value){return value.plan_code===code && value.status==='confirmed'});
+      return '<div class="capacity-input"><label for="capacity-'+code+'">'+label+'</label><input id="capacity-'+code+'" type="number" min="0" step="0.01" placeholder="Credit" value="'+(existing && existing.credit != null ? esc(existing.credit) : '')+'"><button class="refresh" data-save-capacity="'+code+'">保存确认值</button></div>';
+    }
+    function capacitySelectionPanel(days,start,end){
+      var blocked=capacityRangeBlocked(days),selected=days.slice(capacityStart,capacityEnd+1);
+      return '<div class="capacity-selection"><div><strong>'+esc(start && end ? start.date+' → '+end.date : '待补数据')+'</strong><span>'+(blocked?'区间跨越 Reset，不能用于估算':'选中区间必须位于同一个 Reset 窗口；图表可显示跨窗口历史')+'</span></div><button class="refresh" data-auto-estimate '+(blocked || selected.length<2?'disabled':'')+'>自动估算建议值</button></div>';
+    }
+    function capacityEstimatePanel(days){
+      if(!capacityEstimateVisible) return '';
+      var result=capacityEstimate(days);
+      if(!result) return '<div class="capacity-estimate"><div class="estimate-card"><strong class="warn">待补数据</strong><span>没有满足同一 Reset、官方变化至少 5% 的有效区间</span></div></div>';
+      var best=result.best;
+      return '<div class="capacity-estimate"><div class="estimate-card"><strong>'+creditText(best.value)+' Credit</strong><span>建议容量（最大有效候选）</span></div><div class="estimate-card"><strong>'+creditText(result.max)+' Credit</strong><span>最大候选</span></div><div class="estimate-card"><strong>'+fmt(result.count,0)+'</strong><span>有效滑动区间</span></div><div class="estimate-card"><strong>'+esc(days[best.start].date)+' → '+esc(days[best.end].date)+'</strong><span>官方变化 '+percent(best.official)+' · 本机 Credit '+creditText(best.credit)+'</span></div></div>';
+    }
+    function capacityPage(){
+      ensureCapacityRange();
+      var days=sortedDays(),start=days[capacityStart],end=days[capacityEnd];
+      var selectedDays=days.slice(capacityStart,capacityEnd+1);
+      return '<main class="page-content"><div class="section-heading"><h2>容量估算时间范围</h2><p>默认最近 30 天；拖动两个端点选择图表区间</p></div><section class="panel range-panel">'+dualRangeControl(days)+'</section><div class="section-heading"><h2>窗口使用图表</h2><p>'+esc(start && end ? start.date+' → '+end.date : '待补数据')+'</p></div><section class="panel capacity-chart">'+combinedCapacityChart(selectedDays)+capacitySelectionPanel(days,start,end)+capacityEstimatePanel(selectedDays)+capacityComparisonTable(selectedDays)+'</section><div class="section-heading"><h2>人工确认值</h2><p>保存后作为 20 / 100 / 200 档位的确认容量</p></div><section class="capacity-inputs">'+capacityInput('usd20','20 美元档')+capacityInput('usd100','100 美元档')+capacityInput('usd200','200 美元档')+'</section>'+capacityWindowsDetails()+'<p id="capacity-status" class="muted"></p></main>';
+    }
+    function methodPage(){
+      var methodology=report.methodology || {},card=methodology.price_card || [];
+      return '<main class="page-content"><section class="panel method-copy"><h2>计算说明</h2><p>Token 先按 JSONL 的 last usage / cumulative 差分归一化；重复 cumulative 不重复计入，回退视为 reset。</p><p>Credit 和 API 等价美元使用事件发生时的静态价格卡，缓存读、缓存写、非缓存输入和输出分别计价；未知模型或 Fast 状态保持待定，不填 0。</p><p>JSONL 是本机主事实，App Server 只提供当前账号/官方窗口/账号日 Token，ccusage 只作为独立验证。</p><h3>当前静态价格卡 · '+esc(methodology.pricing_version || '待补数据')+'</h3><div class="table-wrap"><table class="table"><thead><tr><th>模型</th><th class="number">订阅输入 / M</th><th class="number">API 输入 / M</th><th class="number">Fast 倍率</th><th>生效</th></tr></thead><tbody>'+card.map(function(row){return '<tr><td>'+esc(row.model)+'</td><td class="number">$'+fmt(row.subscription_input,4)+'</td><td class="number">$'+fmt(row.api_input,4)+'</td><td class="number">'+fmt(row.fast_multiplier,2)+'×</td><td>'+dateTime(row.effective_from_ms)+'</td></tr>'}).join('')+'</tbody></table></div></section></main>';
+    }
+    async function get(path,options){
+      var response=await fetch(path,options);
+      if(!response.ok) throw new Error(await response.text());
+      return response.json();
+    }
+    async function load(date){
+      report=await get('/api/report'+(date?'?date='+encodeURIComponent(date):''));
+      selectedDate=report.selected_day && report.selected_day.date || date || latestDate();
+      ensureCapacityRange();
+      render();
+    }
+    async function saveCapacity(code){
+      var input=document.getElementById('capacity-'+code),value=Number(input && input.value);
+      var status=document.getElementById('capacity-status');
+      if(!Number.isFinite(value) || value<0){if(status) status.textContent='请输入非负 Credit 数值';return}
+      try{
+        await get('/api/capacities',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan_code:code,credit:value,status:'confirmed'})});
+        if(status) status.textContent='已保存 '+code+'：'+creditText(value)+' Credit';
+        await load(selectedDate);
+      }catch(error){if(status) status.textContent='保存失败：'+error.message}
+    }
+    function bind(){
+      document.querySelectorAll('[data-page]').forEach(function(element){element.addEventListener('click',function(){page=element.dataset.page;render()})});
+      document.getElementById('menu-toggle') && document.getElementById('menu-toggle').addEventListener('click',function(){menuOpen=!menuOpen;render()});
+      document.querySelectorAll('[data-scope]').forEach(function(element){element.addEventListener('click',function(){usageScope=element.dataset.scope;render()})});
+      document.querySelectorAll('[data-date]').forEach(function(element){element.addEventListener('click',function(){selectedDate=element.dataset.date;load(selectedDate)})});
+      document.querySelectorAll('[data-chart-date]').forEach(function(element){element.addEventListener('click',function(){selectedDate=element.dataset.chartDate;load(selectedDate)})});
+      document.querySelectorAll('[data-window-select]').forEach(function(element){element.addEventListener('click',function(){selectedWindow=Number(element.dataset.windowSelect);render()})});
+      document.querySelectorAll('[data-metric-scope]').forEach(function(element){element.addEventListener('click',function(){var scope=element.dataset.metricScope,metric=element.dataset.metric;if(scope==='day') dayMetric=metric;if(scope==='minute') minuteMetric=metric;if(scope==='week') weekMetric=metric;render()})});
+      var start=document.getElementById('capacity-start'),end=document.getElementById('capacity-end');
+      var capacityDays=sortedDays();
+      if(start) start.addEventListener('input',function(){capacityStart=Math.min(Number(start.value),capacityEnd);keepCapacityRangeInReset(capacityDays,'start');render()});
+      if(end) end.addEventListener('input',function(){capacityEnd=Math.max(Number(end.value),capacityStart);keepCapacityRangeInReset(capacityDays,'end');render()});
+      document.querySelectorAll('[data-auto-estimate]').forEach(function(element){element.addEventListener('click',function(){if(element.disabled)return;capacityEstimateVisible=true;render()})});
+      document.querySelectorAll('[data-save-capacity]').forEach(function(element){element.addEventListener('click',function(){saveCapacity(element.dataset.saveCapacity)})});
+      var refresh=document.getElementById('refresh');
+      if(refresh) refresh.addEventListener('click',async function(){refresh.textContent='刷新中…';try{await get('/api/refresh',{method:'POST'});await load(selectedDate)}catch(error){showError(error)}});
+    }
+    function render(){
+      if(!report) return;
+      app.innerHTML='<div class="app-shell '+(menuOpen?'menu-open':'')+'">'+sidebar()+'<div class="main-shell">'+topbar()+(page==='usage'?usagePage():page==='capacity'?capacityPage():methodPage())+'</div></div>';
+      bind();
+    }
+    function showError(error){
+      app.innerHTML='<div class="error">读取失败：'+esc(error && error.message || error)+'<br><button class="refresh" onclick="location.reload()">重试</button></div>';
+    }
+    load().catch(showError);
+  })();
+  </script>
+</body>
+</html>
