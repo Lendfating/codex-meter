@@ -92,7 +92,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     .section-heading h2{margin:0;font-size:18px;letter-spacing:-.02em}
     .section-heading p{margin:0;color:var(--muted);font-size:12px}
     .window-summary{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,.8fr);gap:16px}
-    .window-main{min-height:190px}
+    .window-main{min-height:0}
     .eyebrow{margin:0;color:var(--green);font-size:11px;font-weight:900;letter-spacing:.12em;text-transform:uppercase}
     .window-title{display:flex;align-items:baseline;gap:12px;margin:9px 0 4px}
     .window-title h2{margin:0;font-size:26px;letter-spacing:-.04em}
@@ -100,11 +100,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     .pill.warn{background:#f8e7e3;color:var(--red)}
     .window-range{color:var(--muted);font-size:12px}
     .window-range b{color:var(--ink)}
-    .window-capacity-callout{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:16px;padding:12px 14px;border:1px solid #cfe5d8;border-radius:12px;background:#f1faf5}
-    .window-capacity-callout span{display:block;color:var(--green);font-size:11px;font-weight:900;letter-spacing:.04em}
-    .window-capacity-callout strong{display:block;font-size:18px;white-space:nowrap}
-    .window-capacity-callout small{display:block;color:var(--muted);font-size:10px;text-align:right}
-    .window-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:20px}
+    .window-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-top:14px}
     .stat-card{min-width:0}
     .stat-card strong{display:block;font-size:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .stat-card span{display:block;color:var(--muted);font-size:11px}
@@ -491,6 +487,9 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       if(code==='team') return 'Team';
       return plan ? String(plan) : '订阅待识别';
     }
+    function capacityDefaults(){
+      return {usd20:3200,usd100:16000,usd200:64000};
+    }
     function confirmedCapacity(){
       var current=report && report.current || {},account=current.account || {},direct=firstNumber(account,['weekly_credit','credit_capacity','capacity_credit']) || firstNumber(current,['weekly_credit','credit_capacity','capacity_credit']);
       if(direct!=null) return direct;
@@ -498,7 +497,8 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       var expected=code==='plus'?'usd20':code==='pro'?'usd200':null;
       if(!expected) return null;
       var row=(report.capacities || []).find(function(item){return item.plan_code===expected && item.status==='confirmed' && number(item.credit)!=null});
-      return row ? number(row.credit) : null;
+      if(row && number(row.credit)!=null) return number(row.credit);
+      return capacityDefaults()[expected];
     }
     function firstNumber(object,names){
       if(!object) return null;
@@ -588,8 +588,8 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     }
     function topbar(){
       var current=report && report.current || {}, account=current.account || {}, official=current.official || {};
-      var available=official.used_percent != null;
-      return '<header class="topbar"><div class="topbar-left"><div class="page-brand"><div class="page-brand-mark">CM</div><strong class="page-brand-name">Codex Meter</strong></div><div class="page-heading"><h1>'+pageTitle()+'</h1><p>'+pageSubtitle()+'</p></div></div><div class="top-actions"><div class="account-badge"><strong>当前订阅：'+esc(planLabel(account.plan))+' <span class="pill '+(available?'':'warn')+'">'+(available?'官方可用':'官方待观测')+'</span></strong></div><button class="refresh" id="refresh">刷新 JSONL</button></div></header>';
+      var capacity=confirmedCapacity();
+      return '<header class="topbar"><div class="topbar-left"><div class="page-brand"><div class="page-brand-mark">CM</div><strong class="page-brand-name">Codex Meter</strong></div><div class="page-heading"><h1>'+pageTitle()+'</h1><p>'+pageSubtitle()+'</p></div></div><div class="top-actions"><div class="account-badge"><strong>当前订阅：'+esc(planLabel(account.plan))+' <span class="pill '+(capacity==null?'warn':'')+'">'+(capacity==null?'周额度待确认':creditText(capacity)+' Credit')+'</span></strong></div><button class="refresh" id="refresh">刷新 JSONL</button></div></header>';
     }
     function statCard(label,value,sub){
       return '<div class="stat-card"><strong>'+value+'</strong><span>'+esc(label)+'</span>'+(sub?'<small>'+sub+'</small>':'')+'</div>';
@@ -604,8 +604,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       var aggregate=windowAggregate(win),accountToken=accountTokenThroughYesterday(win),capacity=aggregate.capacity;
       var accountTokenValue=accountToken==null?'<span class="warn">待补数据</span>':tokens(accountToken);
       var creditSub=capacity==null?'周额度待确认':'周额度 '+creditText(capacity)+' Credit';
-      var capacityValue=capacity==null?'<span class="warn">待确认</span>':creditText(capacity)+' Credit';
-      return '<section class="window-summary"><div class="panel window-main"><p class="eyebrow">当前窗口 / ACCOUNT WINDOW</p><div class="window-title"><h2>'+percent(official.used_percent)+' 已用</h2><span class="pill '+(official.remaining_percent==null?'warn':'')+'">剩余 '+percent(official.remaining_percent)+'</span></div><div class="window-range"><b>'+dateTime(start)+'</b>　→　<b>'+dateTime(reset)+'</b><span>　窗口起点 / 下次 Reset</span></div><div class="window-capacity-callout"><div><span>当前套餐周额度</span><strong>'+capacityValue+'</strong></div><small>'+esc(planLabel(current.account && current.account.plan))+'<br>确认值用于本机周占比</small></div><div class="window-stats">'+statCard('账号 Token（窗口参考）',accountTokenValue,'从窗口起始日到昨天；首日可能多算，今天未结算')+statCard('本机 Token（窗口累计）',tokens(aggregate.token))+statCard('本机 API 美元（窗口累计）',money(aggregate.api))+statCard('本机 Credit（窗口累计）',creditValue(aggregate.credit),creditSub)+statCard('本机周占比',percent(aggregate.percent),'本机 Credit / 当前套餐周额度')+'</div></div><div class="panel window-side"><div><p class="eyebrow">官方窗口状态</p><strong>已过 '+elapsed+'，距下次 Reset '+remaining+'</strong><p>'+esc(official.source || 'none')+'；官方百分比历史优先来自 JSONL。</p></div><div><p>账号 Token 是日级参考；本机 Token、API 美元和 Credit 按 JSONL 主事实累计；缺失字段保持待补数据。</p></div></div></section>';
+      return '<section class="window-summary"><div class="panel window-main"><p class="eyebrow">当前窗口 / ACCOUNT WINDOW</p><div class="window-title"><h2>'+percent(official.used_percent)+' 已用</h2><span class="pill '+(official.remaining_percent==null?'warn':'')+'">剩余 '+percent(official.remaining_percent)+'</span></div><div class="window-range"><b>'+dateTime(start)+'</b>　→　<b>'+dateTime(reset)+'</b><span>　窗口起点 / 下次 Reset</span></div><div class="window-stats">'+statCard('账号 Token（窗口参考）',accountTokenValue,'从窗口起始日到昨天；首日可能多算，今天未结算')+statCard('本机 Token（窗口累计）',tokens(aggregate.token))+statCard('本机 API 美元（窗口累计）',money(aggregate.api))+statCard('本机 Credit（窗口累计）',creditValue(aggregate.credit),creditSub)+statCard('本机周占比',percent(aggregate.percent),'本机 Credit / 当前套餐周额度')+'</div></div><div class="panel window-side"><div><p class="eyebrow">官方窗口状态</p><strong>已过 '+elapsed+'，距下次 Reset '+remaining+'</strong><p>'+esc(official.source || 'none')+'；官方百分比历史优先来自 JSONL。</p></div><div><p>账号 Token 是日级参考；本机 Token、API 美元和 Credit 按 JSONL 主事实累计；缺失字段保持待补数据。</p></div></div></section>';
     }
     function scopeTabs(){
       return '<div class="scope-tabs"><button class="scope-tab '+(usageScope==='day'?'active':'')+'" data-scope="day">按日期</button><button class="scope-tab '+(usageScope==='window'?'active':'')+'" data-scope="window">按周窗口</button></div>';
@@ -1099,7 +1098,8 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     }
     function capacityInput(code,label){
       var existing=(report.capacities || []).find(function(value){return value.plan_code===code && value.status==='confirmed'});
-      return '<div class="capacity-input"><label for="capacity-'+code+'">'+label+'</label><input id="capacity-'+code+'" type="number" min="0" step="0.01" placeholder="Credit" value="'+(existing && existing.credit != null ? esc(existing.credit) : '')+'"><button class="refresh" data-save-capacity="'+code+'">保存确认值</button></div>';
+      var value=existing && existing.credit != null ? existing.credit : capacityDefaults()[code];
+      return '<div class="capacity-input"><label for="capacity-'+code+'">'+label+'</label><input id="capacity-'+code+'" type="number" min="0" step="0.01" placeholder="Credit" value="'+esc(value==null?'':value)+'"><button class="refresh" data-save-capacity="'+code+'">保存确认值</button></div>';
     }
     function capacitySelectionPanel(days,start,end){
       var blocked=capacityRangeBlocked(days),selected=days.slice(capacityStart,capacityEnd+1);
