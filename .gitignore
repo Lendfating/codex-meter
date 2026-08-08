@@ -2,3 +2,6 @@
 /web/node_modules/
 .runtime/
 .DS_Store
+.omo/
+.playwright-mcp/
+*.png
