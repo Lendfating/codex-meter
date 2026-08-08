@@ -77,7 +77,7 @@ is_healthy() {
 ensure_binary() {
   if [ "$SKIP_BUILD" != "1" ]; then
     printf 'codex-meter: building %s\n' "$BIN"
-    (cd "$REPO_ROOT" && cargo build --offline)
+    (cd "$REPO_ROOT" && cargo build)
   fi
   [ -x "$BIN" ] || die "binary is not executable: $BIN"
 }
