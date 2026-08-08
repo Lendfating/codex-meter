@@ -6,7 +6,12 @@ use sqlx::{
 };
 use thiserror::Error;
 
+use crate::config::CapacityDefaults;
+
 const SCHEMA: &str = include_str!("../config/schema.sql");
+
+mod source_jsonl;
+pub use source_jsonl::SourceJsonlBatchReport;
 
 #[derive(Debug, Error)]
 pub enum DbError {
@@ -298,6 +303,45 @@ impl Database {
             .await?;
         for statement in indexes {
             sqlx::query(statement).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    /// Install the configured baseline capacities once. User-saved rows have
+    /// later effective dates and remain untouched by this idempotent seed.
+    pub async fn ensure_default_capacities(
+        &self,
+        defaults: &CapacityDefaults,
+    ) -> Result<(), DbError> {
+        for (profile_code, weekly_credit) in [
+            ("usd20", defaults.usd20),
+            ("usd100", defaults.usd100),
+            ("usd200", defaults.usd200),
+        ] {
+            let exists: Option<i64> = sqlx::query_scalar(
+                "SELECT 1 FROM capacities
+                 WHERE profile_code = ?
+                   AND account_key IS NULL
+                   AND plan_type IS NULL
+                   AND effective_from_ms = 0
+                 LIMIT 1",
+            )
+            .bind(profile_code)
+            .fetch_optional(&self.pool)
+            .await?;
+            if exists.is_some() {
+                continue;
+            }
+            sqlx::query(
+                "INSERT INTO capacities
+                    (profile_code, account_key, plan_type, weekly_credit,
+                     effective_from_ms, effective_to_ms, confirmed_at_ms)
+                 VALUES (?, NULL, NULL, ?, 0, NULL, 0)",
+            )
+            .bind(profile_code)
+            .bind(weekly_credit)
+            .execute(&self.pool)
+            .await?;
         }
         Ok(())
     }
@@ -849,6 +893,32 @@ mod tests {
             ]
         );
         assert_eq!(database.table_count().await.unwrap(), 8);
+    }
+
+    #[tokio::test]
+    async fn seeds_default_capacities_idempotently() {
+        let database = Database::connect_in_memory().await.unwrap();
+        let defaults = CapacityDefaults::default();
+
+        database
+            .ensure_default_capacities(&defaults)
+            .await
+            .unwrap();
+        database
+            .ensure_default_capacities(&defaults)
+            .await
+            .unwrap();
+
+        let rows = database.list_capacities().await.unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.try_get::<String, _>("profile_code").unwrap() == "usd20")
+                .unwrap()
+                .try_get::<f64, _>("weekly_credit")
+                .unwrap(),
+            defaults.usd20
+        );
     }
 
     #[tokio::test]

@@ -8,12 +8,13 @@ RUNTIME_DIR="$REPO_ROOT/.runtime"
 PID_FILE="$RUNTIME_DIR/codex-meter.pid"
 LOG_FILE="$RUNTIME_DIR/codex-meter.log"
 DB_PATH="$RUNTIME_DIR/codex-meter.sqlite"
-BIN="$REPO_ROOT/target/debug/codex-meter"
+BIN="$REPO_ROOT/target/release/codex-meter"
 
 # Command-line defaults; overridden by --options below.
 PORT=18778
 SKIP_BUILD=0
-CCUSAGE_ON=0
+CCUSAGE_ON=1
+FROM_DATE=""
 
 die() {
   printf 'codex-meter: %s\n' "$*" >&2
@@ -38,6 +39,14 @@ parse_args() {
       --ccusage)
         CCUSAGE_ON=1
         shift
+        ;;
+      --from)
+        [ "$#" -ge 2 ] || die "--from requires a value in YYYY-MM-DD format"
+        case "$2" in
+          ????-??-??) FROM_DATE="$2" ;;
+          *) die "--from must use YYYY-MM-DD format: $2" ;;
+        esac
+        shift 2
         ;;
       -h|--help)
         usage
@@ -74,10 +83,26 @@ is_healthy() {
   curl --silent --show-error --fail "$BASE_URL/api/health" >/dev/null 2>&1
 }
 
+health_payload() {
+  curl --silent --show-error --fail "$BASE_URL/api/health"
+}
+
+is_ready() {
+  health_payload 2>/dev/null | tr -d '[:space:]' | grep -q '"data_ready":true'
+}
+
+is_sync_failed() {
+  health_payload 2>/dev/null | tr -d '[:space:]' | grep -q '"sync_phase":"failed"'
+}
+
+sync_phase() {
+  health_payload 2>/dev/null | sed -n 's/.*"sync_phase":"\([^"]*\)".*/\1/p'
+}
+
 ensure_binary() {
   if [ "$SKIP_BUILD" != "1" ]; then
     printf 'codex-meter: building %s\n' "$BIN"
-    (cd "$REPO_ROOT" && cargo build)
+    (cd "$REPO_ROOT" && cargo build --release --offline)
   fi
   [ -x "$BIN" ] || die "binary is not executable: $BIN"
 }
@@ -91,6 +116,22 @@ wait_for_health() {
     fi
     attempts=$((attempts + 1))
     sleep 0.5
+  done
+  return 1
+}
+
+wait_for_ready() {
+  max_attempts=150
+  attempts=0
+  while [ "$attempts" -lt "$max_attempts" ]; do
+    if is_ready; then
+      return 0
+    fi
+    if is_sync_failed; then
+      return 2
+    fi
+    attempts=$((attempts + 1))
+    sleep 2
   done
   return 1
 }
@@ -129,9 +170,27 @@ start_service() {
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
     if is_codex_meter_pid "$pid"; then
       if is_healthy; then
-        printf 'codex-meter is already running (pid %s)\n' "$pid"
-        printf 'Web: %s/\n' "$BASE_URL"
-        return 0
+        if is_ready; then
+          printf 'codex-meter is already running (pid %s)\n' "$pid"
+          printf 'Data: ready\n'
+          printf 'Web: %s/\n' "$BASE_URL"
+          return 0
+        fi
+        printf 'codex-meter is already running (pid %s); waiting for data readiness\n' "$pid"
+        ready_result=0
+        wait_for_ready || ready_result=$?
+        if [ "$ready_result" -eq 0 ]; then
+          printf 'Data: ready\n'
+          printf 'Web: %s/\n' "$BASE_URL"
+          return 0
+        fi
+        if [ "$ready_result" -eq 2 ]; then
+          printf 'codex-meter: initial data sync failed; recent log:\n' >&2
+        else
+          printf 'codex-meter: initial data sync did not finish within 5 minutes; recent log:\n' >&2
+        fi
+        tail -n 60 "$LOG_FILE" >&2 || true
+        return 1
       fi
       printf 'codex-meter process %s exists but is not healthy; restarting it\n' "$pid" >&2
       stop_process
@@ -154,6 +213,7 @@ start_service() {
       CODEX_METER_BIND="$BIND_ADDRESS"
     )
     [ "$CCUSAGE_ON" = "1" ] && start_env+=(CODEX_METER_CCUSAGE_ON=1)
+    [ -n "$FROM_DATE" ] && start_env+=(CODEX_METER_JSONL_FROM="$FROM_DATE")
     nohup env "${start_env[@]}" "$BIN" >>"$LOG_FILE" 2>&1 < /dev/null &
     printf '%s\n' "$!" > "$PID_FILE"
   )
@@ -165,8 +225,24 @@ start_service() {
     return 1
   fi
 
+  ready_result=0
+  if wait_for_ready; then
+    :
+  else
+    ready_result=$?
+    if [ "$ready_result" -eq 2 ]; then
+      printf 'codex-meter: initial data sync failed; recent log:\n' >&2
+    else
+      printf 'codex-meter: initial data sync did not finish within 5 minutes; recent log:\n' >&2
+    fi
+    tail -n 60 "$LOG_FILE" >&2 || true
+    stop_process || true
+    return 1
+  fi
+
   pid="$(read_pid)"
   printf 'codex-meter is running (pid %s)\n' "$pid"
+  printf 'Data: ready\n'
   printf 'Web: %s/\n' "$BASE_URL"
 }
 
@@ -182,6 +258,12 @@ status_service() {
   fi
   if is_healthy; then
     printf 'codex-meter is running (pid %s)\n' "$pid"
+    if is_ready; then
+      printf 'Data: ready\n'
+    else
+      phase="$(sync_phase)"
+      printf 'Data: loading%s\n' "${phase:+ ($phase)}"
+    fi
     printf 'Web: %s/\n' "$BASE_URL"
     printf 'Health: %s/api/health\n' "$BASE_URL"
     printf 'Log: %s\n' "$LOG_FILE"
@@ -221,13 +303,15 @@ Commands:
 Options (start/restart):
   --port N                 HTTP port (default: 18778)
   --no-build               Reuse an already-built binary instead of running cargo build
-  --ccusage                Enable ccusage reconciliation (runs on boot, then hourly; also on POST /api/refresh)
+  --ccusage                Keep ccusage reconciliation enabled (default; runs on boot, then hourly; also on POST /api/refresh)
+  --from YYYY-MM-DD        Inclusive JSONL backfill start date (default: the last 30 calendar days)
 
 Examples:
   ./service.sh start
   ./service.sh start --port 18779
   ./service.sh start --no-build
   ./service.sh restart --ccusage
+  ./service.sh start --from 2026-01-01
 USAGE
 }
 

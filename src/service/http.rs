@@ -10,7 +10,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::Row;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 use crate::{
@@ -32,7 +32,75 @@ pub struct AppState {
     pub database: Database,
     pub collector: JsonlCollector,
     pub ccusage: CcusageCollector,
-    pub scan_complete: Arc<AtomicBool>,
+    pub sync_state: SyncState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncPhase {
+    Starting,
+    Scanning,
+    Materializing,
+    Ready,
+    Failed,
+}
+
+impl SyncPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Scanning => "scanning",
+            Self::Materializing => "materializing",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SyncSnapshot {
+    pub phase: SyncPhase,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyncState {
+    snapshot: Arc<Mutex<SyncSnapshot>>,
+}
+
+impl SyncState {
+    pub fn new() -> Self {
+        Self {
+            snapshot: Arc::new(Mutex::new(SyncSnapshot {
+                phase: SyncPhase::Starting,
+                error: None,
+            })),
+        }
+    }
+
+    pub fn set_phase(&self, phase: SyncPhase) {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        snapshot.phase = phase;
+        snapshot.error = None;
+    }
+
+    pub fn set_failed(&self, error: impl Into<String>) {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        snapshot.phase = SyncPhase::Failed;
+        snapshot.error = Some(error.into());
+    }
+
+    pub fn snapshot(&self) -> SyncSnapshot {
+        self.snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -81,6 +149,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/report", get(report))
         .route("/api/refresh", post(refresh))
         .route("/api/capacities", post(save_capacity))
+        .route("/api/sync/progress", get(sync_progress))
         .with_state(state)
 }
 
@@ -89,9 +158,52 @@ async fn index() -> Html<&'static str> {
 }
 
 async fn health(State(state): State<AppState>) -> Result<Json<Value>, ServiceError> {
-    Ok(Json(
-        json!({"status":"ok","schema":"minimal-eight","tables":state.database.table_count().await?,"jsonl_home":state.collector.home_display(),"jsonl_scan_complete":state.scan_complete.load(std::sync::atomic::Ordering::Relaxed)}),
-    ))
+    let sync = state.sync_state.snapshot();
+    let ready = sync.phase == SyncPhase::Ready;
+    Ok(Json(json!({
+        "status":"ok",
+        "schema":"minimal-eight",
+        "tables":state.database.table_count().await?,
+        "jsonl_home":state.collector.home_display(),
+        "jsonl_scan_complete":ready,
+        "data_ready":ready,
+        "sync_phase":sync.phase.as_str(),
+        "sync_error":sync.error
+    })))
+}
+
+async fn sync_progress(State(state): State<AppState>) -> Result<Json<Value>, ServiceError> {
+    let sync = state.sync_state.snapshot();
+    let ready = sync.phase == SyncPhase::Ready;
+    let (days_synced, last_record_ms) = if ready {
+        let days_synced = state.database.list_usage_daily().await?.len();
+        let last_record_ms = state
+            .database
+            .list_source_jsonl()
+            .await?
+            .iter()
+            .filter_map(|row| {
+                if row.try_get::<String, _>("kind").ok()? == "usage" {
+                    row.try_get::<i64, _>("observed_at_ms").ok()
+                } else {
+                    None
+                }
+            })
+            .max();
+        (Some(days_synced), last_record_ms)
+    } else {
+        (None, None)
+    };
+    Ok(Json(json!({
+        "percent": if ready { Some(100) } else { None::<i32> },
+        "phase": sync.phase.as_str(),
+        "ready": ready,
+        "failed": sync.phase == SyncPhase::Failed,
+        "error": sync.error,
+        "days_synced": days_synced,
+        "total_days": None::<i32>,
+        "last_record_ms": last_record_ms
+    })))
 }
 
 async fn report(
@@ -200,7 +312,11 @@ mod tests {
             database,
             collector: JsonlCollector::new("/tmp/no-codex"),
             ccusage: CcusageCollector::disabled("/tmp/no-codex", "Asia/Shanghai"),
-            scan_complete: Arc::new(AtomicBool::new(true)),
+            sync_state: {
+                let sync_state = SyncState::new();
+                sync_state.set_phase(SyncPhase::Ready);
+                sync_state
+            },
         });
         let response = app
             .clone()
@@ -213,6 +329,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let health: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health["data_ready"], true);
+        assert_eq!(health["sync_phase"], "ready");
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/sync/progress")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let progress: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(progress["ready"], true);
+        assert_eq!(progress["phase"], "ready");
+        assert_eq!(progress["percent"], 100);
         let response = app
             .oneshot(
                 Request::builder()

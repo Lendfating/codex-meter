@@ -22,32 +22,35 @@ Codex Meter 是一个本地小工具，用来回答两个问题：
 ./service.sh logs
 ```
 
-脚本默认执行 `cargo build --offline`，默认数据库是
+脚本默认执行 `cargo build --release --offline`，默认数据库是
 `.runtime/codex-meter.sqlite`，默认从 `~/.codex` 读取
-`sessions/` 和 `archived_sessions/`。常用参数：
+`sessions/` 和 `archived_sessions/`。首次启动默认只回填最近 30 个自然日；
+需要更早历史时显式指定起始日期：
 
 ```sh
 ./service.sh start --port 18778
+./service.sh start --from 2026-01-01
 ```
 
-已有构建产物时可加 `--no-build`。App Server 始终启用（提供当前账号/
+已有构建产物时可加 `--no-build`。`--from` 为包含起始日的 JSONL 回填范围；
+后续轮询仍使用 cursor 增量扫描。App Server 始终启用（提供当前账号/
 官方配额），其失败不影响 JSONL 主流程。
 
-需要保存独立的 ccusage 对账时，显式打开它（每次会跑 API/订阅两套价格、
-daily/session 和 `auto`/`standard`，共 8 个小结果）：
+ccusage 对账默认开启（每次会跑 API/订阅两套价格、daily/session 和
+`auto`/`standard`，共 8 个小结果）。需要显式重启时也可以带上 `--ccusage`：
 
 ```sh
 ./service.sh restart --ccusage
 ```
 
-打开后启动时立即对账一次，之后每 1 小时自动对账一次；
+启动时立即对账一次，之后每 1 小时自动对账一次；
 `POST /api/refresh` 也会顺带执行对账。ccusage 优先在系统 PATH 中查找，
 找不到时通过 `npx` 临时安装官方 `ccusage@latest`，两者都没有则报错跳过。
 结果会脱敏后写入 `source_ccusage`，页面一的"JSONL vs ccusage"
 直接显示 Token/美元差值；ccusage 失败不会阻断 JSONL 主报告。
 
-全部命令和参数（`--port`、`--no-build`、
-`--ccusage`）见 `./service.sh --help`。
+全部命令和参数（`--port`、`--no-build`、`--ccusage`、`--from`）见
+`./service.sh --help`。
 
 ## 最小 API
 

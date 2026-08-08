@@ -1,6 +1,6 @@
 # Codex Meter 来源 Pipeline
 
-状态：2026-08-08，来源事实链、真实历史回填与结果物化均已验收
+状态：2026-08-08，来源事实链、范围回填实现中；性能优化待冷启动基准
 
 这条 Pipeline 把三个来源采集、脱敏、归一化后写入三张 `source_*` 表，再由第二批
 Pipeline 从它们重建四张 `usage_*` 结果表。
@@ -25,10 +25,15 @@ ccusage 仍然是验证器。它可以重新读取 JSONL，但不能覆盖 `sour
 
 ### 2.1 JSONL
 
-- 启动时扫描 `sessions/` 和 `archived_sessions/`，完成历史回填。
-- 新来源第一次运行从文件头回填 `source_jsonl`；之后使用与数据库同目录的
+- 启动时默认只回填最近 30 个自然日；可用 `./service.sh start --from YYYY-MM-DD`
+  或 `restart --from YYYY-MM-DD` 显式扩展包含起始日的历史范围。
+- 新来源第一次运行从选定范围的文件头回填 `source_jsonl`；之后使用与数据库同目录的
   `*.jsonl-cursors.json` sidecar 保存偏移，不把游标混入八张正式表。
 - 默认每 5 分钟扫描一次；只读取文件游标之后的新完整行，文件未变化时快速跳过。
+- 首次候选文件按 session 首条元数据/路径日期筛选；fork/replay 只读取必要的父
+  Session Token 前缀，不把范围外父日志完整写入账本。
+- 文件按大小有界并行流式解析，先做事件字节预筛选，再解析目标 JSON 行；一批记录在
+  单个 SQLite 事务中批量 UPSERT。
 - 最后一行没有换行符时暂不处理，下一轮继续。
 - 文件被截断或游标超出长度时从文件头重扫；`source_key` 保证不会重复写入。
 - sidecar 只保存路径、偏移和摘要等可重建游标；删除 sidecar 后会安全地从文件头重扫，
@@ -65,7 +70,7 @@ App Server 始终启用，不需要环境变量开关。失败时不写零值；
 
 ### 2.3 ccusage
 
-- ccusage 对账是可选功能，由启动参数 `--ccusage`（环境变量 `CODEX_METER_CCUSAGE_ON=1`）开启。
+- ccusage 对账默认开启；`service.sh` 默认传入 `CODEX_METER_CCUSAGE_ON=1`，`--ccusage` 保留为显式开启选项。
 - 开启后：启动时执行一次、之后每小时自动执行一次、`POST /api/refresh` 手动刷新时无条件执行一次。
 - 一次运行固定执行 8 组：`daily/session × subscription/api × auto/standard`。
 - 每个日期或原始 Session 一行，保存 Token 六字段、金额、模型紧凑汇总、参数和版本。

@@ -1,8 +1,7 @@
 //! Small, versioned runtime configuration.
 //!
-//! Prices and subscription capacities are deliberately files shipped with the
-//! application rather than database tables.  The database only stores the
-//! values a user has explicitly confirmed in `capacities`.
+//! Prices are deliberately shipped as files. Capacity defaults are copied into
+//! the runtime database as a baseline; user changes are stored as overrides.
 
 use std::{
     fs,

@@ -21,6 +21,8 @@ use sqlx::{sqlite::SqliteConnectOptions, sqlite::SqlitePoolOptions, Row};
 use thiserror::Error;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
+mod fast;
+
 use crate::{
     db::{Database, DbError, SourceJsonlRecord},
     pricing::TokenCounts,
@@ -36,6 +38,44 @@ pub enum JsonlError {
     Database(#[from] DbError),
     #[error("JSONL timestamp is invalid: {0}")]
     Timestamp(String),
+    #[error("JSONL scanner worker panicked")]
+    WorkerPanic,
+}
+
+fn default_from_date() -> time::Date {
+    OffsetDateTime::now_utc()
+        .to_offset(time::UtcOffset::from_hms(8, 0, 0).unwrap_or(time::UtcOffset::UTC))
+        .date()
+        - time::Duration::days(29)
+}
+
+fn parse_date(value: &str) -> Result<time::Date, JsonlError> {
+    let mut parts = value.split('-');
+    let year = parts
+        .next()
+        .and_then(|part| part.parse::<i32>().ok());
+    let month = parts
+        .next()
+        .and_then(|part| part.parse::<u8>().ok());
+    let day = parts
+        .next()
+        .and_then(|part| part.parse::<u8>().ok());
+    if parts.next().is_some() {
+        return Err(JsonlError::Timestamp(format!(
+            "invalid JSONL from date: {value}"
+        )));
+    }
+    let (Some(year), Some(month), Some(day)) = (year, month, day) else {
+        return Err(JsonlError::Timestamp(format!(
+            "invalid JSONL from date: {value}"
+        )));
+    };
+    let month = time::Month::try_from(month).map_err(|_| {
+        JsonlError::Timestamp(format!("invalid JSONL from date: {value}"))
+    })?;
+    time::Date::from_calendar_date(year, month, day).map_err(|_| {
+        JsonlError::Timestamp(format!("invalid JSONL from date: {value}"))
+    })
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
@@ -54,6 +94,7 @@ pub struct JsonlCollector {
     codex_home: PathBuf,
     cursor_path: Option<PathBuf>,
     root_repaired: Arc<AtomicBool>,
+    from_date: Option<time::Date>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -170,12 +211,28 @@ impl JsonlCollector {
             codex_home: codex_home.into(),
             cursor_path: Some(PathBuf::from(".runtime/jsonl-cursors.json")),
             root_repaired: Arc::new(AtomicBool::new(false)),
+            from_date: None,
         }
     }
 
     pub fn with_cursor_path(mut self, path: Option<PathBuf>) -> Self {
         self.cursor_path = path;
         self
+    }
+
+    pub fn with_from_date(mut self, from_date: Option<time::Date>) -> Self {
+        self.from_date = from_date;
+        self
+    }
+
+    pub fn from_env() -> Result<time::Date, JsonlError> {
+        match std::env::var("CODEX_METER_JSONL_FROM") {
+            Ok(value) => parse_date(&value),
+            Err(std::env::VarError::NotPresent) => Ok(default_from_date()),
+            Err(std::env::VarError::NotUnicode(_)) => Err(JsonlError::Timestamp(
+                "CODEX_METER_JSONL_FROM is not valid UTF-8".to_owned(),
+            )),
+        }
     }
 
     pub fn home_display(&self) -> String {
@@ -195,148 +252,9 @@ impl JsonlCollector {
     }
 
     pub async fn scan_once(&self, database: &Database) -> Result<JsonlScanReport, JsonlError> {
-        let mut cursors = load_cursors(self.cursor_path.as_deref())?;
-        let metadata = load_local_session_metadata(&self.codex_home).await;
-        let paths = self.discover_paths()?;
-        let initial_root_repair = !self.root_repaired.load(Ordering::Acquire);
-        let has_new_file = paths
-            .iter()
-            .any(|(path, _)| !cursors.files.contains_key(path.to_string_lossy().as_ref()));
-        let replay_plan = if initial_root_repair || has_new_file {
-            Some(load_replay_plan(&paths)?)
-        } else {
-            None
-        };
-        let parent_graph = if initial_root_repair {
-            load_parent_graph(&paths, &metadata)?
-        } else {
-            load_persisted_parent_graph(database, &metadata).await?
-        };
-        let mut report = JsonlScanReport {
-            files_scanned: paths.len(),
-            ..Default::default()
-        };
-        for (path, _) in paths {
-            self.scan_file(
-                database,
-                &path,
-                &metadata,
-                &parent_graph,
-                replay_plan.as_ref(),
-                &mut cursors,
-                &mut report,
-            )
-            .await?;
-            save_cursors(self.cursor_path.as_deref(), &cursors)?;
-        }
-        if initial_root_repair {
-            repair_existing_roots(database, &parent_graph).await?;
-            self.root_repaired.store(true, Ordering::Release);
-        }
-        Ok(report)
+        fast::scan_once(self, database).await
     }
 
-    async fn scan_file(
-        &self,
-        database: &Database,
-        path: &Path,
-        metadata: &BTreeMap<String, LocalSessionMetadata>,
-        parent_graph: &BTreeMap<String, String>,
-        replay_plan: Option<&BTreeMap<PathBuf, ReplaySpec>>,
-        cursors: &mut CursorStore,
-        report: &mut JsonlScanReport,
-    ) -> Result<(), JsonlError> {
-        let file_metadata = fs::metadata(path)?;
-        let bytes = fs::read(path)?;
-        let path_key = path.to_string_lossy().into_owned();
-        let mtime_ms = file_metadata.modified().ok().and_then(system_time_ms);
-        let existing = cursors.files.get(&path_key).cloned();
-        let mut start = existing
-            .as_ref()
-            .map(|value| value.offset_bytes as usize)
-            .unwrap_or(0);
-        let prefix_changed = existing
-            .as_ref()
-            .and_then(|value| {
-                let end = value.offset_bytes as usize;
-                (end <= bytes.len())
-                    .then(|| value.digest.as_deref() != Some(&hex_digest(&bytes[..end])))
-            })
-            .unwrap_or(false);
-        if start > bytes.len() || prefix_changed {
-            start = 0;
-        }
-        let mut context = if start == 0 {
-            FileContext::default()
-        } else {
-            existing
-                .as_ref()
-                .map(|value| value.context.clone())
-                .unwrap_or_default()
-        };
-        let chunk = &bytes[start..];
-        let complete_bytes = if chunk.ends_with(b"\n") {
-            chunk.len()
-        } else {
-            chunk
-                .iter()
-                .rposition(|byte| *byte == b'\n')
-                .map(|index| index + 1)
-                .unwrap_or(0)
-        };
-        let complete = &chunk[..complete_bytes];
-        let mut replay_state = (start == 0)
-            .then(|| ReplayState::new(replay_plan.and_then(|plan| plan.get(path))))
-            .flatten();
-        for line in complete.split(|byte| *byte == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
-            report.complete_lines += 1;
-            let Ok(value) = serde_json::from_slice::<Value>(line) else {
-                continue;
-            };
-            let records = match records_for_line(line, &value, &mut context) {
-                Ok(records) => records,
-                Err(JsonlError::Timestamp(_)) => continue,
-                Err(error) => return Err(error),
-            };
-            for mut record in records {
-                if record.kind == "usage"
-                    && replay_state
-                        .as_mut()
-                        .is_some_and(|state| state.should_skip(&record_tokens(&record)))
-                {
-                    continue;
-                }
-                enrich_record_from_metadata(&mut record, metadata, parent_graph);
-                report.recognized_events += 1;
-                let is_quota = record.kind == "quota";
-                if database.upsert_source_jsonl(&record).await? {
-                    report.inserted_events += 1;
-                    if is_quota {
-                        report.inserted_quota_samples += 1;
-                    }
-                } else {
-                    report.duplicate_events += 1;
-                }
-            }
-        }
-        if complete_bytes > 0 || existing.is_none() {
-            report.files_changed += 1;
-        }
-        let next_offset = start.saturating_add(complete_bytes);
-        cursors.files.insert(
-            path_key,
-            CursorState {
-                offset_bytes: next_offset as u64,
-                mtime_ms,
-                digest: (next_offset > 0).then(|| hex_digest(&bytes[..next_offset])),
-                context,
-            },
-        );
-        Ok(())
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -344,113 +262,6 @@ struct ReplayMetadata {
     session_id: Option<String>,
     parent_session_id: Option<String>,
     forked_at_ms: Option<i64>,
-}
-
-/// Build the per-file replay prefixes used by the source scanner.  This is a
-/// small, local implementation of ccusage's `CodexReplayPlan`: only token
-/// components and fork metadata are retained, never prompts or tool payloads.
-fn load_replay_plan(
-    paths: &[(PathBuf, &'static str)],
-) -> Result<BTreeMap<PathBuf, ReplaySpec>, JsonlError> {
-    let mut metadata = BTreeMap::new();
-    let mut files_by_session = BTreeMap::new();
-    let mut usage_by_path = BTreeMap::new();
-
-    for (path, _) in paths {
-        let meta = read_replay_metadata(path)?;
-        if let Some(session_id) = meta.session_id.as_ref() {
-            files_by_session
-                .entry(session_id.clone())
-                .or_insert_with(|| path.clone());
-        }
-        usage_by_path.insert(path.clone(), read_usage_events(path)?);
-        metadata.insert(path.clone(), meta);
-    }
-
-    let mut plan = BTreeMap::new();
-    for (child, meta) in metadata {
-        let Some(parent_id) = meta.parent_session_id else {
-            continue;
-        };
-        let parent_path = files_by_session
-            .get(&parent_id)
-            .filter(|path| **path != child)
-            .cloned();
-        let child_events = usage_by_path.get(&child).cloned().unwrap_or_default();
-        let fallback_burst_len = leading_rewritten_burst_len(&child_events);
-        let parent_prefix = parent_path
-            .and_then(|path| usage_by_path.get(&path).cloned())
-            .map(|events| {
-                events
-                    .into_iter()
-                    .filter(|(timestamp, _)| {
-                        meta.forked_at_ms
-                            .is_none_or(|forked_at| *timestamp <= forked_at)
-                    })
-                    .map(|(_, tokens)| tokens)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        plan.insert(
-            child,
-            ReplaySpec {
-                parent_prefix,
-                fallback_burst_len,
-            },
-        );
-    }
-    Ok(plan)
-}
-
-fn read_replay_metadata(path: &Path) -> Result<ReplayMetadata, JsonlError> {
-    let bytes = fs::read(path)?;
-    for line in bytes.split(|byte| *byte == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
-            continue;
-        }
-        let payload = value.get("payload").unwrap_or(&Value::Null);
-        return Ok(ReplayMetadata {
-            session_id: payload
-                .get("id")
-                .or_else(|| payload.get("session_id"))
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned),
-            parent_session_id: session_parent(payload),
-            forked_at_ms: parse_timestamp(value.get("timestamp")).ok(),
-        });
-    }
-    Ok(ReplayMetadata::default())
-}
-
-fn read_usage_events(path: &Path) -> Result<Vec<(i64, TokenCounts)>, JsonlError> {
-    let bytes = fs::read(path)?;
-    let mut context = FileContext::default();
-    let mut events = Vec::new();
-    for line in bytes.split(|byte| *byte == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        let Ok(records) = records_for_line(line, &value, &mut context) else {
-            continue;
-        };
-        for record in records.into_iter().filter(|record| record.kind == "usage") {
-            let tokens = record_tokens(&record);
-            if tokens.observed() {
-                events.push((record.observed_at_ms, tokens));
-            }
-        }
-    }
-    Ok(events)
 }
 
 fn leading_rewritten_burst_len(events: &[(i64, TokenCounts)]) -> usize {
@@ -511,83 +322,6 @@ async fn repair_existing_roots(
         }
     }
     Ok(())
-}
-
-async fn load_persisted_parent_graph(
-    database: &Database,
-    metadata: &BTreeMap<String, LocalSessionMetadata>,
-) -> Result<BTreeMap<String, String>, JsonlError> {
-    let mut graph = metadata
-        .iter()
-        .filter_map(|(session_id, value)| {
-            value
-                .parent_session_id
-                .as_ref()
-                .map(|parent| (session_id.clone(), parent.clone()))
-        })
-        .collect::<BTreeMap<_, _>>();
-    for row in database.list_source_jsonl().await? {
-        let Some(session_id) = row
-            .try_get::<Option<String>, _>("session_id")
-            .map_err(|error| JsonlError::Database(DbError::Sqlx(error)))?
-        else {
-            continue;
-        };
-        if let Some(parent) = row
-            .try_get::<Option<String>, _>("parent_session_id")
-            .map_err(|error| JsonlError::Database(DbError::Sqlx(error)))?
-        {
-            graph.insert(session_id, parent);
-        }
-    }
-    Ok(graph)
-}
-
-/// Build the complete direct-parent graph before parsing usage rows.  The
-/// source table keeps both the direct parent and the final root; the latter is
-/// resolved here so downstream materialization never has to guess a root from
-/// an intermediate value.
-fn load_parent_graph(
-    paths: &[(PathBuf, &'static str)],
-    metadata: &BTreeMap<String, LocalSessionMetadata>,
-) -> Result<BTreeMap<String, String>, JsonlError> {
-    let mut graph = metadata
-        .iter()
-        .filter_map(|(session_id, value)| {
-            value
-                .parent_session_id
-                .as_ref()
-                .map(|parent| (session_id.clone(), parent.clone()))
-        })
-        .collect::<BTreeMap<_, _>>();
-
-    for (path, _) in paths {
-        let bytes = fs::read(path)?;
-        for line in bytes.split(|byte| *byte == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
-            let Ok(value) = serde_json::from_slice::<Value>(line) else {
-                continue;
-            };
-            if value.get("type").and_then(Value::as_str) != Some("session_meta") {
-                continue;
-            }
-            let payload = value.get("payload").unwrap_or(&Value::Null);
-            let Some(session_id) = payload
-                .get("id")
-                .or_else(|| payload.get("session_id"))
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-            else {
-                continue;
-            };
-            if let Some(parent) = session_parent(payload) {
-                graph.insert(session_id.to_owned(), parent);
-            }
-        }
-    }
-    Ok(graph)
 }
 
 fn load_cursors(path: Option<&Path>) -> Result<CursorStore, JsonlError> {
@@ -1750,6 +1484,65 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn parses_jsonl_from_date_inclusive() {
+        assert_eq!(parse_date("2026-08-01").unwrap().to_string(), "2026-08-01");
+        assert!(parse_date("2026-13-01").is_err());
+        assert!(parse_date("2026-08-01-extra").is_err());
+    }
+
+    #[tokio::test]
+    async fn from_date_skips_old_untracked_files() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("codex-meter-range-{nonce}"));
+        let old_dir = root.join("sessions/2026/01");
+        let recent_dir = root.join("sessions/2026/08");
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::create_dir_all(&recent_dir).unwrap();
+        let session = |id: &str, timestamp: &str| {
+            json!({
+                "timestamp": timestamp,
+                "type": "session_meta",
+                "payload": {"id": id}
+            })
+            .to_string()
+                + "\n"
+        };
+        fs::write(
+            old_dir.join("rollout-old.jsonl"),
+            session("old", "2026-01-02T00:00:00Z"),
+        )
+        .unwrap();
+        std::fs::File::open(old_dir.join("rollout-old.jsonl"))
+            .unwrap()
+            .set_modified(
+                SystemTime::UNIX_EPOCH
+                    + std::time::Duration::from_secs(1_704_153_600),
+            )
+            .unwrap();
+        fs::write(
+            recent_dir.join("rollout-recent.jsonl"),
+            session("recent", "2026-08-02T00:00:00Z"),
+        )
+        .unwrap();
+
+        let database = Database::connect_in_memory().await.unwrap();
+        let collector = JsonlCollector::new(&root)
+            .with_cursor_path(Some(root.join("cursor.json")))
+            .with_from_date(Some(parse_date("2026-08-01").unwrap()));
+        let report = collector.scan_once(&database).await.unwrap();
+        assert_eq!(report.files_scanned, 1);
+        let rows = database.list_source_jsonl().await.unwrap();
+        assert!(rows.iter().all(|row| {
+            row.try_get::<Option<String>, _>("session_id").unwrap().as_deref()
+                == Some("recent")
+        }));
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn real_sample_smoke_when_requested() {
         let Some(sample) = std::env::var_os("CODEX_METER_REAL_SAMPLE_JSONL") else {
@@ -1850,7 +1643,12 @@ mod tests {
         }
 
         let database = Database::connect(&db_path).await.unwrap();
-        let collector = JsonlCollector::new(home).with_cursor_path(Some(cursor_path));
+        let from_date = std::env::var("CODEX_METER_FULL_SOURCE_FROM")
+            .ok()
+            .map(|value| parse_date(&value).unwrap());
+        let collector = JsonlCollector::new(home)
+            .with_cursor_path(Some(cursor_path))
+            .with_from_date(from_date);
         let first = collector.scan_once(&database).await.unwrap();
         let second = collector.scan_once(&database).await.unwrap();
         let rows = database.list_source_jsonl().await.unwrap();

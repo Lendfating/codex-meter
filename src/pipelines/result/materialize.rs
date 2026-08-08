@@ -4,7 +4,10 @@
 //! applies the date/window/session rules once, and atomically replaces the
 //! four page-facing tables.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    time::Instant,
+};
 
 use serde_json::{json, Value};
 use sqlx::Row;
@@ -237,10 +240,26 @@ struct Capacity {
 }
 
 pub async fn refresh_rollups(database: &Database) -> Result<MaterializeSummary, MaterializeError> {
+    let profile = std::env::var_os("CODEX_METER_PROFILE").is_some();
+    let total_started = Instant::now();
+    let load_jsonl_started = Instant::now();
     let (raw_usages, session_meta, turns) = load_jsonl(database).await?;
+    let load_jsonl_elapsed = load_jsonl_started.elapsed();
+    let raw_usage_count = raw_usages.len();
+    let session_meta_count = session_meta.len();
+    let turn_count = turns.values().map(Vec::len).sum::<usize>();
+    let dedupe_started = Instant::now();
     let usages = dedupe_usages(raw_usages);
+    let dedupe_elapsed = dedupe_started.elapsed();
+    let usage_count = usages.len();
+    let load_account_started = Instant::now();
     let (mut quotas, account) = load_account_and_quotas(database).await?;
+    let load_account_elapsed = load_account_started.elapsed();
+    let quota_count = quotas.len();
+    let load_capacities_started = Instant::now();
     let capacities = load_capacities(database).await?;
+    let load_capacities_elapsed = load_capacities_started.elapsed();
+    let aggregate_started = Instant::now();
     quotas.sort_by_key(|quota| {
         (
             quota.first_seen_at_ms,
@@ -556,15 +575,40 @@ pub async fn refresh_rollups(database: &Database) -> Result<MaterializeSummary, 
         .iter()
         .map(|(key, session)| to_session_row(key, session, &account, &capacities, &minutes))
         .collect::<Vec<_>>();
+    let aggregate_elapsed = aggregate_started.elapsed();
+    let write_started = Instant::now();
     database
         .replace_rollups(&daily_rows, &minute_rows, &window_rows, &session_rows)
         .await?;
-    Ok(MaterializeSummary {
+    let write_elapsed = write_started.elapsed();
+    let summary = MaterializeSummary {
         days: daily_rows.len(),
         minutes: minute_rows.len(),
         sessions: session_rows.len(),
         windows: window_rows.len(),
-    })
+    };
+    if profile {
+        eprintln!(
+            "materialize_profile total_ms={} load_jsonl_ms={} dedupe_ms={} load_account_ms={} load_capacities_ms={} aggregate_ms={} write_ms={} raw_usages={} usages={} session_meta={} turns={} quotas={} days={} minutes={} sessions={} windows={}",
+            total_started.elapsed().as_millis(),
+            load_jsonl_elapsed.as_millis(),
+            dedupe_elapsed.as_millis(),
+            load_account_elapsed.as_millis(),
+            load_capacities_elapsed.as_millis(),
+            aggregate_elapsed.as_millis(),
+            write_elapsed.as_millis(),
+            raw_usage_count,
+            usage_count,
+            session_meta_count,
+            turn_count,
+            quota_count,
+            summary.days,
+            summary.minutes,
+            summary.sessions,
+            summary.windows,
+        );
+    }
+    Ok(summary)
 }
 
 fn empty_minute(
@@ -854,7 +898,34 @@ async fn load_account_and_quotas(
             priority: 2,
         });
     }
-    Ok((quotas, account))
+    Ok((retain_canonical_primary_quotas(quotas), account))
+}
+
+/// A Codex account can expose more than one primary-looking limit.  The
+/// `codex_bengalfox`/Spark limit is a rolling availability signal whose reset
+/// timestamp moves forward between observations while its usage remains zero;
+/// it is not the account's billable weekly window.  When the stable canonical
+/// `codex` limit is present for an account, keep that limit for primary-window
+/// materialization and leave secondary observations untouched.
+fn retain_canonical_primary_quotas(quotas: Vec<QuotaObservation>) -> Vec<QuotaObservation> {
+    let canonical_accounts = quotas
+        .iter()
+        .filter(|quota| {
+            quota.window_kind == "primary" && quota.limit_id.as_deref() == Some("codex")
+        })
+        .map(|quota| quota.account_key.clone())
+        .collect::<HashSet<_>>();
+    if canonical_accounts.is_empty() {
+        return quotas;
+    }
+    quotas
+        .into_iter()
+        .filter(|quota| {
+            quota.window_kind != "primary"
+                || !canonical_accounts.contains(&quota.account_key)
+                || quota.limit_id.as_deref() == Some("codex")
+        })
+        .collect()
 }
 
 async fn load_capacities(database: &Database) -> Result<Vec<Capacity>, MaterializeError> {
@@ -905,9 +976,12 @@ fn build_windows(quotas: &[QuotaObservation]) -> Vec<WindowSegment> {
             let percent_reset = previous_percent
                 .zip(quota.used_percent)
                 .is_some_and(|(old, new)| new + RESET_DROP_PERCENT < old);
-            let explicit_reset = previous_reset
-                .zip(quota.resets_at_ms)
-                .is_some_and(|(old, new)| (new - old).abs() > RESET_TIME_JITTER_MS);
+            let explicit_reset =
+                previous_reset
+                    .zip(quota.resets_at_ms)
+                    .is_some_and(|(old, new)| {
+                        (new - old).abs() > RESET_TIME_JITTER_MS && (percent_reset || new < old)
+                    });
             if current.is_none() || percent_reset || explicit_reset {
                 if let Some(value) = current.take() {
                     windows.push(value);
@@ -1591,6 +1665,7 @@ fn local_date(epoch_ms: i64) -> Result<String, MaterializeError> {
 mod tests {
     use super::*;
     use crate::db::{SourceJsonlRecord, UsageDailyRecord};
+    use crate::pipelines::source::jsonl::JsonlCollector;
 
     fn usage_record(source_key: &str, observed_at_ms: i64, relation: Option<&str>) -> UsageRecord {
         UsageRecord {
@@ -1891,6 +1966,57 @@ mod tests {
         assert_eq!(build_windows(&values).len(), 2);
     }
 
+    #[test]
+    fn moving_zero_usage_reset_does_not_create_windows() {
+        let values = [
+            (1_000_000, 2_000_000),
+            (1_060_000, 2_600_000),
+            (1_120_000, 3_200_000),
+        ]
+        .into_iter()
+        .map(|(first_seen_at_ms, resets_at_ms)| QuotaObservation {
+            first_seen_at_ms,
+            last_seen_at_ms: first_seen_at_ms,
+            account_key: Some("account".to_owned()),
+            limit_id: Some("codex_bengalfox".to_owned()),
+            window_kind: "primary".to_owned(),
+            used_percent: Some(0.0),
+            window_minutes: Some(10_080),
+            resets_at_ms: Some(resets_at_ms),
+            plan_type: Some("pro".to_owned()),
+            source: "jsonl",
+            priority: 1,
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(build_windows(&values).len(), 1);
+    }
+
+    #[test]
+    fn canonical_codex_primary_limit_filters_dynamic_spark_limit() {
+        let make = |limit_id: &str, window_kind: &str| QuotaObservation {
+            first_seen_at_ms: 1_000_000,
+            last_seen_at_ms: 1_000_000,
+            account_key: Some("account".to_owned()),
+            limit_id: Some(limit_id.to_owned()),
+            window_kind: window_kind.to_owned(),
+            used_percent: Some(0.0),
+            window_minutes: Some(10_080),
+            resets_at_ms: Some(2_000_000),
+            plan_type: Some("pro".to_owned()),
+            source: "jsonl",
+            priority: 1,
+        };
+        let filtered = retain_canonical_primary_quotas(vec![
+            make("codex", "primary"),
+            make("codex_bengalfox", "primary"),
+            make("codex_bengalfox", "secondary"),
+        ]);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|quota| {
+            quota.window_kind == "secondary" || quota.limit_id.as_deref() == Some("codex")
+        }));
+    }
+
     #[tokio::test]
     #[ignore = "requires the rebuilt local runtime database"]
     async fn real_runtime_rollup_refresh_when_requested() {
@@ -1902,5 +2028,64 @@ mod tests {
             .unwrap();
         let summary = refresh_rollups(&database).await.unwrap();
         eprintln!("real rollup refresh: {summary:?}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicit frozen Codex home and fresh temporary database"]
+    async fn real_d30_full_pipeline_profile_when_requested() {
+        if std::env::var("CODEX_METER_RUN_D30_PIPELINE")
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
+            return;
+        }
+        let home = std::path::PathBuf::from(
+            std::env::var_os("CODEX_METER_D30_HOME").expect("CODEX_METER_D30_HOME is required"),
+        );
+        let database_path = std::path::PathBuf::from(
+            std::env::var_os("CODEX_METER_D30_DB").expect("CODEX_METER_D30_DB is required"),
+        );
+        let cursor_path = std::path::PathBuf::from(
+            std::env::var_os("CODEX_METER_D30_CURSOR").expect("CODEX_METER_D30_CURSOR is required"),
+        );
+        assert!(home.join("sessions").is_dir(), "missing sessions directory");
+        assert!(
+            !database_path.exists(),
+            "refusing to reuse benchmark database: {}",
+            database_path.display()
+        );
+        assert!(
+            !cursor_path.exists(),
+            "refusing to reuse benchmark cursor: {}",
+            cursor_path.display()
+        );
+
+        let total_started = Instant::now();
+        let database = Database::connect(&database_path).await.unwrap();
+        let setup_elapsed = total_started.elapsed();
+        let collector = JsonlCollector::new(home)
+            .with_cursor_path(Some(cursor_path))
+            .with_from_date(Some(JsonlCollector::from_env().unwrap()));
+        let source_started = Instant::now();
+        let scan = collector.scan_once(&database).await.unwrap();
+        let source_elapsed = source_started.elapsed();
+        let materialize_started = Instant::now();
+        let summary = refresh_rollups(&database).await.unwrap();
+        let materialize_elapsed = materialize_started.elapsed();
+
+        eprintln!(
+            "d30_full_pipeline_profile total_ms={} setup_ms={} source_ms={} materialize_ms={} inserted={} duplicates={} days={} minutes={} sessions={} windows={}",
+            total_started.elapsed().as_millis(),
+            setup_elapsed.as_millis(),
+            source_elapsed.as_millis(),
+            materialize_elapsed.as_millis(),
+            scan.inserted_events,
+            scan.duplicate_events,
+            summary.days,
+            summary.minutes,
+            summary.sessions,
+            summary.windows,
+        );
     }
 }

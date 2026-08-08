@@ -499,3 +499,4 @@ Session 汇总规则：
 | 真实历史回填与 ccusage 交叉验收 | `.runtime/codex-meter.sqlite`, `.runtime/jsonl-cursors.json` | 50 文件/83,347 行；source `50/1552/12481/101`；ccusage 8/8 成功、280 行；`integrity_check=ok`；20 日可对账、总量差 0.222% | JSONL/ccusage 差异在报告层解释 | 已验证 |
 | 结果表物化（Daily/Minute/Window/Turn-Session） | `src/pipelines/result/materialize.rs`, `src/db.rs` | `cargo test`；窗口、跨日 Turn、去重和 reasoning_effort 回归测试 | 四张结果表可重复重建；Reset/周窗口直接读取 `usage_window` | 已验证 |
 | 页面与真实数据闭环 | `src/service/report.rs`, `web/index.html` | `cargo build`；`cargo test`；内嵌 Web JS 语法检查；`.runtime/codex-meter.sqlite` 完整性和八表计数检查 | `/api/report` 读取真实数据；三个页面逐页验收 | 已验证 |
+| 首次范围回填与 Pipeline 性能 | `service.sh`, `src/main.rs`, `src/pipelines/source/jsonl*`, `src/db/source_jsonl.rs` | 默认 30 天、显式 `--from`、增量 cursor、fork/replay 回归；release 冷启动与 ccusage 对比基准 | 不改变八张表和 source 字段语义 | 进行中 |

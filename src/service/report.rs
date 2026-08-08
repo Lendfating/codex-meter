@@ -486,7 +486,40 @@ fn current_json(
     let quota = app
         .iter()
         .filter(|row| row.try_get::<String, _>("kind").ok().as_deref() == Some("quota"))
-        .max_by_key(|row| row.try_get::<i64, _>("last_seen_at_ms").unwrap_or_default());
+        .filter(|row| {
+            row.try_get::<Option<String>, _>("window_kind")
+                .ok()
+                .flatten()
+                .is_none_or(|kind| kind == "primary")
+        })
+        .filter(|row| {
+            row.try_get::<Option<String>, _>("limit_id")
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some("codex")
+        })
+        .max_by_key(|row| row.try_get::<i64, _>("last_seen_at_ms").unwrap_or_default())
+        .or_else(|| {
+            app.iter()
+                .filter(|row| {
+                    row.try_get::<String, _>("kind").ok().as_deref() == Some("quota")
+                })
+                .filter(|row| {
+                    row.try_get::<Option<String>, _>("window_kind")
+                        .ok()
+                        .flatten()
+                        .is_none_or(|kind| kind == "primary")
+                })
+                .max_by_key(|row| row.try_get::<i64, _>("last_seen_at_ms").unwrap_or_default())
+        })
+        .or_else(|| {
+            app.iter()
+                .filter(|row| {
+                    row.try_get::<String, _>("kind").ok().as_deref() == Some("quota")
+                })
+                .max_by_key(|row| row.try_get::<i64, _>("last_seen_at_ms").unwrap_or_default())
+        });
     let account_key = account.and_then(|row| {
         row.try_get::<Option<String>, _>("account_key")
             .ok()
