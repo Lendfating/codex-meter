@@ -1,7 +1,7 @@
 -- Codex Meter canonical schema.
 --
--- This tracked file defines the seven runtime tables. Runtime data is kept
--- in .data/codex-meter.sqlite and is intentionally excluded from Git.
+-- This tracked file defines the eight runtime tables. Runtime data is kept
+-- in .runtime/codex-meter.sqlite and is intentionally excluded from Git.
 CREATE TABLE IF NOT EXISTS source_jsonl (
     id INTEGER PRIMARY KEY,
     source_key TEXT NOT NULL UNIQUE,
@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS source_jsonl (
     observed_at_ms INTEGER NOT NULL,
     last_seen_at_ms INTEGER,
     session_id TEXT,
+    parent_session_id TEXT,
     root_session_id TEXT,
     turn_id TEXT,
     relation TEXT CHECK (relation IS NULL OR relation IN ('main', 'child', 'fork', 'unknown')),
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS source_jsonl (
     ended_at_ms INTEGER,
     model TEXT,
     service_tier TEXT,
+    reasoning_effort TEXT,
     provider TEXT,
     plan_type TEXT,
     input_tokens INTEGER,
@@ -37,6 +39,8 @@ CREATE INDEX IF NOT EXISTS idx_source_jsonl_time
     ON source_jsonl(observed_at_ms, id);
 CREATE INDEX IF NOT EXISTS idx_source_jsonl_session_time
     ON source_jsonl(root_session_id, session_id, observed_at_ms, id);
+CREATE INDEX IF NOT EXISTS idx_source_jsonl_parent
+    ON source_jsonl(parent_session_id, session_id, observed_at_ms, id);
 CREATE INDEX IF NOT EXISTS idx_source_jsonl_turn
     ON source_jsonl(turn_id, observed_at_ms, id);
 CREATE INDEX IF NOT EXISTS idx_source_jsonl_quota
@@ -143,6 +147,9 @@ CREATE TABLE IF NOT EXISTS usage_minute (
     provider TEXT,
     capacity_profile TEXT,
     window_id TEXT,
+    window_kind TEXT CHECK (
+        window_kind IS NULL OR window_kind IN ('primary', 'secondary', 'unknown')
+    ),
     window_start_ms INTEGER,
     resets_at_ms INTEGER,
     reset_marker INTEGER NOT NULL DEFAULT 0 CHECK (reset_marker IN (0, 1)),
@@ -167,6 +174,41 @@ CREATE INDEX IF NOT EXISTS idx_usage_minute_window_time
     ON usage_minute(window_id, minute_start_ms, id);
 CREATE INDEX IF NOT EXISTS idx_usage_minute_account_time
     ON usage_minute(account_key, minute_start_ms, id);
+
+CREATE TABLE IF NOT EXISTS usage_window (
+    window_id TEXT PRIMARY KEY,
+    account_key TEXT,
+    limit_id TEXT,
+    window_kind TEXT NOT NULL CHECK (window_kind IN ('primary', 'secondary', 'unknown')),
+    window_start_ms INTEGER,
+    resets_at_ms INTEGER,
+    window_minutes INTEGER,
+    auth_kind TEXT,
+    plan_type TEXT,
+    provider TEXT,
+    capacity_profile TEXT,
+    input_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    output_tokens INTEGER,
+    reasoning_tokens INTEGER,
+    total_tokens INTEGER,
+    credit REAL,
+    api_usd REAL,
+    local_percent REAL,
+    account_tokens INTEGER,
+    unobserved_tokens INTEGER,
+    coverage_ratio REAL,
+    official_percent_start REAL,
+    official_percent_end REAL,
+    official_percent_delta REAL,
+    quality TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_window_start
+    ON usage_window(window_start_ms, resets_at_ms, window_id);
+CREATE INDEX IF NOT EXISTS idx_usage_window_account
+    ON usage_window(account_key, window_start_ms, window_id);
 
 CREATE TABLE IF NOT EXISTS usage_session (
     id INTEGER PRIMARY KEY,
@@ -210,7 +252,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_session_window
 CREATE INDEX IF NOT EXISTS idx_usage_session_turn
     ON usage_session(turn_id, started_at_ms, id);
 
-CREATE TABLE IF NOT EXISTS capacities_v2 (
+CREATE TABLE IF NOT EXISTS capacities (
     id INTEGER PRIMARY KEY,
     profile_code TEXT NOT NULL CHECK (profile_code IN ('usd20', 'usd100', 'usd200')),
     account_key TEXT,
@@ -223,4 +265,4 @@ CREATE TABLE IF NOT EXISTS capacities_v2 (
 );
 
 CREATE INDEX IF NOT EXISTS idx_capacities_account_effective
-    ON capacities_v2(account_key, effective_from_ms, effective_to_ms);
+    ON capacities(account_key, effective_from_ms, effective_to_ms);

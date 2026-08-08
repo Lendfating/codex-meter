@@ -1,29 +1,30 @@
-# Codex Meter 最小页面指标与七表数据模型
+# Codex Meter 最小页面指标与八表数据模型
 
 > 状态：2026-08-06 精审冻结稿
 >
-> 作用：固定三个页面到底显示什么、每个指标来自哪里、七张表必须保存什么。后续实现不得自行增加表或无页面消费者的字段。
+> 作用：固定三个页面到底显示什么、每个指标来自哪里、八张表必须保存什么。后续实现不得自行增加表或无页面消费者的字段。
 >
 > 优先级：本文件是 `MINIMAL_IMPLEMENTATION_PLAN.md` 的 M0 数据契约附件；若与旧设计的多层数据库冲突，以当前用户要求和本文件为准。
 
 ## 1. 最终结论
 
-数据库只保留七张表：
+数据库只保留八张表：
 
 1. `source_jsonl`：JSONL 白名单事实。
 2. `source_app_server`：App Server 账号、配额、账号日 Token 快照。
 3. `source_ccusage`：ccusage 日级和 Session 级校验结果。
 4. `usage_daily`：日期粒度结果。
 5. `usage_minute`：分钟粒度结果，也是 Reset 窗口的最小时间轴。
-6. `usage_session`：Turn 粒度结果，通过 `root_session_id` 聚合成页面 Session。
-7. `capacities`（当前物理表名 `capacities_v2`）：人工确认的 20/100/200 美元档周 Credit 容量。
+6. `usage_window`：物化的 Reset/周窗口结果，避免页面每次从分钟重算。
+7. `usage_session`：Turn 粒度结果，通过 `root_session_id` 聚合成页面 Session。
+8. `capacities`：人工确认的 20/100/200 美元档周 Credit 容量。
 
-> 兼容说明：旧迁移已经占用了 `capacities` 这个表名且字段不兼容。本轮只新增 `capacities_v2`，不改旧表；后续清理旧表时再把物理名收敛为 `capacities`。
+> 兼容说明：当前新 baseline 直接使用 `capacities`；旧归档表不属于新运行链。
 
-不建立模型表、Reset 窗口表、当前窗口表、价格表、设置表、文件表、质量表或校验差异表：
+不建立模型表、当前窗口表、价格表、设置表、文件表、质量表或校验差异表：
 
 - 模型汇总从 `usage_session` 聚合。
-- Reset 窗口从 `usage_minute.window_id` 聚合。
+- Reset 窗口结果物化到 `usage_window`，分钟仍是详细时间轴。
 - 当前窗口从最新官方快照和当前 `window_id` 聚合。
 - JSONL/ccusage 差异在查询时按日期或 Session 关联。
 - 价格和公式放在版本化代码配置中。
@@ -50,7 +51,7 @@
 | --- | --- | --- |
 | 当前账号/认证类型 | ChatGPT、API Key、Bedrock 或未知 | 最新 `source_app_server(kind=account)` |
 | 当前套餐/provider | Plus、Pro、Other/API 等 | App Server 当前值；历史按 JSONL 证据 |
-| 当前套餐周额度 | 人工确认的周 Credit 总量 | `capacities_v2` 当前有效记录 |
+| 当前套餐周额度 | 人工确认的周 Credit 总量 | `capacities` 当前有效记录 |
 | 官方已用/剩余 | 账号周窗口状态 | 当前优先 App Server，历史优先 JSONL |
 | 窗口开始/下次 Reset | 当前 Reset 区间 | 配额快照推导的 `window_id/start/reset` |
 | 已经过/距 Reset | 时间差 | 当前时间与窗口起止时间 |
@@ -143,7 +144,7 @@ Turn 内发生多模型或 Fast 切换时，不拆成新数据库表；使用该
 - 右侧一个点代表一个 Reset 窗口，可切换 Token/API 美元/Credit/周窗口 %。
 - 下方仍显示 JSONL/ccusage 对比、窗口内 Session 和窗口内分钟/小时变化。
 
-不建立窗口表；所有窗口数据按 `usage_minute.window_id` 聚合。
+Reset 窗口卡片和趋势直接读取 `usage_window`；分钟明细仍从 `usage_minute` 读取。
 
 ### 2.3 页面二：容量估算
 
@@ -193,7 +194,7 @@ total_tokens = non_cached_input + cache_read + output
 - 官方百分比是账号级；本机百分比是本机 Credit / 人工容量。两者不能互相覆盖。
 - 账号日 Token 是延迟参考；当前日期缺失不填 0。
 
-## 4. 七张表的最终结构
+## 4. 八张表的最终结构
 
 所有时间使用 UTC epoch 毫秒；页面固定按 `Asia/Shanghai` 切日。时区作为代码常量，不另建设置表。
 
@@ -209,13 +210,15 @@ total_tokens = non_cached_input + cache_read + output
 | `observed_at_ms` | usage/turn 实际时间；quota 状态首次观察时间 |
 | `last_seen_at_ms` | quota 相同状态最后确认时间；其他 kind 可为空 |
 | `session_id` | 实际 Session/Thread ID |
-| `root_session_id` | 合并后的根对话 ID |
+| `parent_session_id` | 直接父 Session；用于第二批沿父链合并 child/fork |
+| `root_session_id` | 第一批沿完整 `parent_session_id` 链解析出的最终根对话；无法解析时为 `NULL` 并标记质量 |
 | `turn_id` | Turn ID；缺失保持 `NULL` |
 | `relation` | `main/child/fork/unknown` |
 | `title` | 仅 session 行使用；无可靠来源时为 `NULL` |
 | `started_at_ms` / `ended_at_ms` | turn 行起止；活动中 `ended_at_ms=NULL` |
 | `model` | usage 时实际模型或 turn 主模型 |
 | `service_tier` | `fast/standard/unknown` |
+| `reasoning_effort` | `low/medium/high/...`；来源缺失时为 `NULL` |
 | `provider` | 原始 provider |
 | `plan_type` | `plus/pro/.../NULL` |
 | `input_tokens` | 非缓存输入增量；仅 usage 行 |
@@ -326,7 +329,25 @@ ccusage 值不复制到该表；按 `local_date` 从 `source_ccusage` 关联。
 
 `bucket_key` 由分钟、账号和 window 的真实值生成；业务字段允许 `NULL`，不使用伪造账号或窗口 ID。页面累计值均由分钟增量计算，不重复存累计列。
 
-### 4.6 `usage_session`
+### 4.6 `usage_window`
+
+该表物化每个账号、limit 和窗口类型对应的一次 Reset 区间。它是页面按周窗口和当前窗口的直接读模型；详细分钟曲线仍从 `usage_minute` 读取。
+
+| 字段 | 用途 |
+| --- | --- |
+| `window_id` | 稳定窗口键 |
+| `account_key` / `limit_id` / `window_kind` | 账号、官方 limit 和 primary/secondary |
+| `window_start_ms` / `resets_at_ms` / `window_minutes` | Reset 区间边界 |
+| `auth_kind` / `plan_type` / `provider` / `capacity_profile` | 窗口上下文 |
+| Token 六字段 | 窗口内本机增量 |
+| `credit` / `api_usd` / `local_percent` | 窗口派生金额和本机占比 |
+| `account_tokens` / `unobserved_tokens` / `coverage_ratio` | 账号日 Token 参考和覆盖率 |
+| `official_percent_start` / `official_percent_end` / `official_percent_delta` | 窗口官方变化 |
+| `quality` | mixed_plan、边界或缺失状态 |
+
+第二批 Pipeline 每次从三张来源表完整重建该表，避免前端或 API 对每个请求重新扫描分钟记录。
+
+### 4.7 `usage_session`
 
 该表实际以 Turn 为最小行；页面用 `local_date + root_session_id` 分组为一个 Session。这样既不增加 Turn 表，也不把所有轮次塞成巨大 JSON。
 
@@ -344,7 +365,7 @@ ccusage 值不复制到该表；按 `local_date` 从 `source_ccusage` 关联。
 | `account_key` / `auth_kind` / `plan_type` / `provider` / `capacity_profile` | 本段归一化账号上下文 |
 | `primary_model` | 主要模型，可为空 |
 | `fast_state` | `fast/standard/mixed/unknown` |
-| `model_breakdown_json` | 仅保存 `{model,tier,tokens,credit,api_usd}` |
+| `model_breakdown_json` | 仅保存 `{model,tier,reasoning_effort,tokens,credit,api_usd}` |
 | Token 六字段 | Turn 本机用量 |
 | `credit` / `api_usd` | Turn 派生值 |
 | `official_percent_start` / `official_percent_end` | 仅在真实采样覆盖 Turn 时填写 |
@@ -354,14 +375,14 @@ ccusage 值不复制到该表；按 `local_date` 从 `source_ccusage` 关联。
 
 Session 汇总规则：
 
-- `root_session_id` 相同的 main/child/fork Turn 合并成页面一条对话。
+- `root_session_id` 相同的 main/child/fork Turn 合并成页面一条对话；第二批不再沿父链猜测根 ID。
 - replay/fork 的重复 Token 先在 `source_jsonl` 去重，再进入 Turn 汇总。
 - 标题优先根 Session；没有可靠标题时显示“未命名对话”。
 - Session 开始/结束取所有成员 Turn 的最小/最大时间。
 - Session 模型和 Fast 状态从 Turn 汇总，不给整个 Session 强行指定单一值。
 - 标题优先读取 JSONL 自带元数据；缺失时只从本机 `session_index.jsonl` 或 `state_5.sqlite.threads.title` 补标题。它们属于本地 Session 元数据补充，不成为第四个用量来源，也不读取 `first_user_message`、preview、cwd 或 Git 信息。
 
-### 4.7 `capacities_v2`（逻辑名：`capacities`）
+### 4.8 `capacities`
 
 只保存用户确认值，不保存自动候选。
 
@@ -388,7 +409,7 @@ Session 汇总规则：
 3. App Server/JSONL 任一来源观察到新窗口；
 4. 两边都有时保留两边源记录，报表当前值优先 App Server。
 
-`window_id` 由账号、limit、窗口类型和窗口起点/Reset 组成，不建立窗口表。Reset 前后的分钟不得连接累计曲线。
+`window_id` 由账号、limit、窗口类型和窗口起点/Reset 组成；完整窗口结果物化到 `usage_window`。Reset 前后的分钟不得连接累计曲线。
 
 窗口起点优先取实际观察到的百分比回落/Reset 时刻；历史只看到 `resets_at_ms + window_minutes` 时，才使用 `resets_at_ms - window_minutes` 作为近似起点并标记 `boundary_approximate`。人工提前 Reset 不能被普通周期倒推覆盖。
 
@@ -401,7 +422,7 @@ Session 汇总规则：
 
 ## 6. 页面到数据的闭环检查
 
-| 页面能力 | 必要数据 | 七表落点 | 结论 |
+| 页面能力 | 必要数据 | 八表落点 | 结论 |
 | --- | --- | --- | --- |
 | 当前账号/套餐 | account/auth/plan/provider | `source_app_server` | 覆盖 |
 | 当前官方窗口 | used/reset/limit | `source_app_server`，JSONL 回退 | 覆盖 |
@@ -413,19 +434,19 @@ Session 汇总规则：
 | 模型汇总 | Turn 模型拆分 | `usage_session.model_breakdown_json` | 覆盖 |
 | Session 合并 | root/child/fork/turn | `source_jsonl` → `usage_session` | 覆盖 |
 | 分钟曲线 | 分钟增量和官方采样 | `usage_minute` | 覆盖 |
-| Reset 窗口页 | window_id 分组 | `usage_minute` | 覆盖，无窗口表 |
-| 容量估算 | 同窗口 Credit 与官方变化 | `usage_minute` + `capacities_v2` | 覆盖 |
+| Reset 窗口页 | window_id 结果 | `usage_window` | 覆盖 |
+| 容量估算 | 同窗口 Credit 与官方变化 | `usage_window` + `usage_minute` + `capacities` | 覆盖 |
 | 价格说明 | 版本化代码价格卡 | 静态配置/API methodology | 覆盖，无价格表 |
 
 ## 7. 精审修正
 
-上一版七表草案方向正确，但以下内容不足，现已修正：
+上一版七表草案方向正确，但以下内容不足，现已修正为八表：
 
 1. 上一草案曾把 `auth_kind/account_key/capacity_profile` 放入 JSONL 来源表，但 JSONL 并不稳定提供这些字段；现改为来源表只保存真实观察，跨源账号/容量归属只写入三张结果表，未知时为 `NULL`。
 2. 原先 `usage_session` 按原始 Session 一行会让 child/fork 合并和 Turn 明细冲突；现改为每 Turn 一行，页面按 root Session 聚合。
 3. 原先 Turn JSON 没有可靠表达 Turn 内模型/Fast 切换；现用紧凑 `model_breakdown_json`，不新增表。
 4. 原先分钟表只考虑本机用量，无法在空闲分钟保留官方曲线；现规定官方采样分钟也产生一行。
-5. 原先没有窗口表后的恢复规则；现固定通过 `usage_minute.window_id` 聚合当前窗口、历史窗口和容量区间。
+5. 原先没有窗口表后的恢复规则；现固定由第二批 Pipeline 将窗口结果物化到 `usage_window`，分钟表保留详细时间轴。
 6. 原先 App Server 每次轮询都可能写行；现改为状态变化新增、状态不变只更新 `last_seen_at_ms`。
 7. 原先日表缺账号 Token 的 freshness、未观测量和可比较状态；现已补齐。
 8. 原先容量表不能表达账号在不同日期使用哪个容量档；现允许 `account_key + effective range` 做人工映射。
@@ -434,7 +455,7 @@ Session 汇总规则：
 
 对照 ccusage 当前 Codex 适配器也确认：长上下文档位按单个已归一化 usage 事件的 `input_tokens` 和模型阈值判断，不需要把完整 cumulative JSON 留在数据库。`source_jsonl` 的增量 Token 六字段、模型和 tier 足以支持重算；原始 cumulative 只在扫描当下用于去重和差分。
 
-结论：修正后的七表能够覆盖当前三个页面，不需要第八张表。仍无法从现有来源稳定获得的数据必须保持 `NULL`，包括历史稳定账号 ID、部分标题、未采样 Turn 边界、账号分钟 Token、官方累计 Credit 和另一台机器的精确用量。
+结论：修正后的八表能够覆盖当前三个页面。仍无法从现有来源稳定获得的数据必须保持 `NULL`，包括历史稳定账号 ID、部分标题、未采样 Turn 边界、账号分钟 Token、官方累计 Credit 和另一台机器的精确用量。
 
 ## 8. 存储规模约束
 
@@ -443,6 +464,7 @@ Session 汇总规则：
 - `source_ccusage` 保存归一化汇总，不保存 stdout 原文。
 - `usage_daily` 最多每天一行。
 - `usage_minute` 最多约 1440 行/天/有效账号窗口，通常只写活动或配额采样分钟。
+- `usage_window` 每个 Reset 区间一行；不保存原始配额响应。
 - `usage_session` 每个 Turn 一行；不保存消息正文。
 - JSON 字段只允许两个：`model_breakdown_json` 和 `daily_tokens_json`，且都使用无空白紧凑格式。
 
@@ -450,20 +472,21 @@ Session 汇总规则：
 
 本文件是已审查的数据契约，不代表当前代码已经实现：
 
-- 当前 `migrations/0001.sql` 仍是 `files/events/quota_samples/account_snapshots/validation_runs/capacities/settings` 旧结构；新增 `migrations/0002_minimal_data_model.sql` 提供六张新表和临时物理表 `capacities_v2`。
+- 旧迁移仍是历史结构；当前新运行链由 `config/schema.sql` 直接建立八张目标表。
 - 当前 `events.payload_json` 仍复制完整 JSONL 记录；现有运行库中该列约占 24 MiB，是明确应删除的数据。
 - 当前 JSONL 解析主要处理 session meta、thread settings 和 token count，尚未完整写入 `task_started/task_complete/turn_context`，因此 Turn 起止和模型闭环尚未实现。
 - 当前 Session 结果尚未按 root 合并 child/fork，也没有按日期/Reset 拆 Turn 分段。
 - 当前 App Server 和 ccusage 表存在采集骨架，但真实历史快照/校验结果尚未形成页面闭环。
 
-因此当前状态是“设计已验证、新表 baseline 已落地、采集回填未开始”，不能描述为数据库或页面已经完成。
+因此当前状态是“第一批来源事实与真实历史回填已验证；第二批聚合、API 和页面仍需单独验收”，
+不能把第一批验收描述成数据库或页面全部完成。
 
 ## 10. 实施门禁
 
 在真正改数据库前必须：
 
-1. 备份当前 `.runtime` SQLite，确认旧 `capacities` 是否存在唯一人工值；新表使用 `capacities_v2`，不改旧表。
-2. 新 baseline 只能创建以上七张表。
+1. 备份当前 `.runtime` SQLite，确认旧运行库不被新 baseline 覆盖。
+2. 新 baseline 只能创建以上八张表。
 3. 先用 fixture 验证 Session→Turn→root 合并、去重、模型/Fast 和 Reset；再回填真实历史。
 4. 同一天 JSONL 与 ccusage 的 Token 分类和总量必须可逐列比较。
 5. App Server 断线时 JSONL 历史仍可展示；当前官方状态标记不可用。
@@ -474,7 +497,9 @@ Session 汇总规则：
 | 计划任务 | 实现文件 | 测试/fixture | 页面/API 验收 | 当前状态 |
 | --- | --- | --- | --- | --- |
 | M0 页面指标冻结 | 本文件 | 文档交叉检查 | 三页指标已映射到来源和表 | 已验证 |
-| M0 七表模型冻结 | 本文件 | 七表覆盖矩阵 | 所有页面能力有落点 | 已验证 |
+| M0 八表模型冻结 | 本文件 | 八表覆盖矩阵 | 所有页面能力有落点 | 已验证 |
+| M1 第一批来源事实 | `config/schema.sql`, `src/db.rs`, `src/pipelines/source/*` | `cargo test --quiet`（26/26）；首见/末见、reset、replay、标题/父关系、reasoning、total-only 和 unavailable 回归测试 | 三个 source adapter 只写三张 `source_*` 表；第二批未改 | 已验证 |
+| M1 真实历史回填与 ccusage 交叉验收 | `.runtime/codex-meter.sqlite`, `.runtime/jsonl-cursors.json` | 50 文件/83,347 行；source `50/1552/12481/101`；ccusage 8/8 成功、280 行；`integrity_check=ok`；20 日可对账、总量差 0.222% | 只验收第一批来源；JSONL/ccusage 差异留给第二批解释 | 已验证 |
 | M1 新 baseline | `migrations/0002_minimal_data_model.sql`, `src/minimal/db.rs` | `cargo test --offline minimal::db::tests::minimal_schema_has_seven_new_tables`; 运行库 `PRAGMA integrity_check=ok` | 新表已创建；旧表仍保留 | 已验证 |
 
 ## 当前运行链修订（2026-08-07）
@@ -484,7 +509,7 @@ Session 汇总规则：
 `.runtime/codex-meter-seven.sqlite`。`migrations/0001.sql` 和由它创建的旧表仅作为
 历史归档，不再由 Rust 运行链读取或写入。JSONL 的 Turn 起止、Session 元数据、Token
 增量和 quota 已写入 `source_jsonl`；App Server 和 ccusage 分别只写对应的
-`source_*` 表；第二批再重建三张 `usage_*` 表。当前七表实际清单和剩余历史文件见
+`source_*` 表；第二批再重建四张 `usage_*` 表。当前八表实际清单和剩余历史文件见
 `docs/MINIMAL_CODE_INVENTORY.md`。
-| M1 第二批结果回填（Daily/Minute/Turn-Session/Reset） | `src/minimal/rollup.rs` 及各刷新入口 | `cargo test --offline`（18/18）；真实库 `PRAGMA integrity_check=ok`；`usage_daily=19`、`usage_minute=3486`、`usage_session=995`、6 个 `window_id` | 三张结果表可重复重建；Reset/周窗口由 `usage_minute.window_id` 聚合，不增加 `usage_weekly` | 已验证 |
-| M2/M3/M4 页面与真实数据闭环 | 待实现 | 待实现 | 待实现 | 未开始 |
+| M1 第二批结果回填（Daily/Minute/Window/Turn-Session） | `src/pipelines/result/materialize.rs` 及 `src/db.rs` | `cargo test`（35/35）；窗口、跨日 Turn、去重和 reasoning_effort 回归测试 | 四张结果表可重复重建；Reset/周窗口直接读取 `usage_window` | 已验证 |
+| M2/M3/M4 页面与真实数据闭环 | `src/service/report.rs`, `web/index.html` | `cargo build`; `cargo test`（44 passed, 2 ignored）；内嵌 Web JS 语法及无 Mock 检查；`.runtime/codex-meter.sqlite` 完整性和八表计数检查 | `/api/report` 读取真实日/分钟/窗口/Session/校验/价格数据；三页已用真实报告逐页验收；容量未确认时保留“待确认” | 已验证 |

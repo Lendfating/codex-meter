@@ -10,44 +10,44 @@ Codex Meter 是一个本地小工具，用来回答两个问题：
 ## 启动与验证
 
 ```sh
-./scripts/codex-meter-service.sh start
-./scripts/codex-meter-service.sh status
+./service.sh start
+./service.sh status
 ```
 
 浏览器打开 <http://127.0.0.1:18778/>。停止、重启和查看日志：
 
 ```sh
-./scripts/codex-meter-service.sh stop
-./scripts/codex-meter-service.sh restart
-./scripts/codex-meter-service.sh logs
+./service.sh stop
+./service.sh restart
+./service.sh logs
 ```
 
 脚本默认执行 `cargo build --offline`，默认数据库是
-`.runtime/codex-meter-seven.sqlite`，默认从 `~/.codex` 读取
-`sessions/` 和 `archived_sessions/`。常用覆盖项：
+`.runtime/codex-meter.sqlite`，默认从 `~/.codex` 读取
+`sessions/` 和 `archived_sessions/`。常用参数：
 
 ```sh
-CODEX_METER_DB=/tmp/codex-meter.sqlite \
-CODEX_HOME="$HOME/.codex" \
-CODEX_METER_PORT=18778 \
-./scripts/codex-meter-service.sh start
+./service.sh start --port 18778
 ```
 
-已有构建产物时可设置 `CODEX_METER_SKIP_BUILD=1`。App Server 只在明确设置
-`CODEX_METER_APP_SERVER_ON_BOOT=1` 时启用；不启用也可以完整查看 JSONL 历史。
+已有构建产物时可加 `--no-build`。App Server 始终启用（提供当前账号/
+官方配额），其失败不影响 JSONL 主流程。
 
-需要保存独立的 ccusage 对账时，明确打开它（每次会跑 API/订阅两套价格、
+需要保存独立的 ccusage 对账时，显式打开它（每次会跑 API/订阅两套价格、
 daily/session 和 `auto`/`standard`，共 8 个小结果）：
 
 ```sh
-CODEX_METER_CCUSAGE_ON_BOOT=1 \
-CODEX_METER_CCUSAGE_BIN=/path/to/ccusage \
-./scripts/codex-meter-service.sh restart
+./service.sh restart --ccusage
 ```
 
-也可以设置 `CODEX_METER_CCUSAGE_ON_REFRESH=1`，让 `POST /api/refresh` 同时
-执行对账。结果会脱敏后写入 `source_ccusage`，页面一的“JSONL vs ccusage”
+打开后启动时立即对账一次，之后每 1 小时自动对账一次；
+`POST /api/refresh` 也会顺带执行对账。ccusage 优先在系统 PATH 中查找，
+找不到时通过 `npx` 临时安装官方 `ccusage@latest`，两者都没有则报错跳过。
+结果会脱敏后写入 `source_ccusage`，页面一的"JSONL vs ccusage"
 直接显示 Token/美元差值；ccusage 失败不会阻断 JSONL 主报告。
+
+全部命令和参数（`--port`、`--no-build`、
+`--ccusage`）见 `./service.sh --help`。
 
 ## 最小 API
 

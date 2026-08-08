@@ -1,1 +1,45 @@
-{}
+{
+  "scheme": "subscription_credit",
+  "catalog_version": "subscription-credit-catalog-2026-08-07",
+  "timezone": "Asia/Shanghai",
+  "versions": [
+    {
+      "version": "subscription-credit-before-2026-07-30",
+      "effective_from_ms": 0,
+      "effective_to_ms": 1785369600000,
+      "source": "OpenAI Codex rate card (historical snapshot)",
+      "source_url": "https://help.openai.com/en/articles/20001106-codex-rate-card",
+      "source_precision": "official previous token-credit table; date-only change normalized to 2026-07-30T00:00:00Z",
+      "rates": [
+        {"model":"gpt-5.6-sol","input_microusd_per_million":125000000,"cache_read_microusd_per_million":12500000,"cache_write_microusd_per_million":0,"output_microusd_per_million":750000000,"fast_multiplier":2.5},
+        {"model":"gpt-5.6-terra","input_microusd_per_million":62500000,"cache_read_microusd_per_million":6250000,"cache_write_microusd_per_million":0,"output_microusd_per_million":375000000,"fast_multiplier":2.5},
+        {"model":"gpt-5.6-luna","input_microusd_per_million":25000000,"cache_read_microusd_per_million":2500000,"cache_write_microusd_per_million":0,"output_microusd_per_million":150000000,"fast_multiplier":2.5},
+        {"model":"gpt-5.5","aliases":["codex-auto-review"],"input_microusd_per_million":125000000,"cache_read_microusd_per_million":12500000,"cache_write_microusd_per_million":0,"output_microusd_per_million":750000000,"fast_multiplier":2.5},
+        {"model":"gpt-5.5-cyber","input_microusd_per_million":500000000,"cache_read_microusd_per_million":50000000,"cache_write_microusd_per_million":0,"output_microusd_per_million":3000000000,"fast_multiplier":null},
+        {"model":"gpt-5.4","input_microusd_per_million":62500000,"cache_read_microusd_per_million":6250000,"cache_write_microusd_per_million":0,"output_microusd_per_million":375000000,"fast_multiplier":2.0},
+        {"model":"gpt-5.4-mini","input_microusd_per_million":18750000,"cache_read_microusd_per_million":1875000,"cache_write_microusd_per_million":0,"output_microusd_per_million":113000000,"fast_multiplier":null},
+        {"model":"gpt-5.3-codex","input_microusd_per_million":43750000,"cache_read_microusd_per_million":4375000,"cache_write_microusd_per_million":0,"output_microusd_per_million":350000000,"fast_multiplier":null},
+        {"model":"gpt-5.2","input_microusd_per_million":43750000,"cache_read_microusd_per_million":4375000,"cache_write_microusd_per_million":0,"output_microusd_per_million":350000000,"fast_multiplier":null}
+      ]
+    },
+    {
+      "version": "subscription-credit-2026-07-30",
+      "effective_from_ms": 1785369600000,
+      "effective_to_ms": null,
+      "source": "OpenAI Codex rate card and GPT-5.6 announcement",
+      "source_url": "https://help.openai.com/en/articles/20001106-codex-rate-card",
+      "source_precision": "official current token-credit table; date-only change normalized to 2026-07-30T00:00:00Z",
+      "rates": [
+        {"model":"gpt-5.6-sol","input_microusd_per_million":125000000,"cache_read_microusd_per_million":12500000,"cache_write_microusd_per_million":0,"output_microusd_per_million":750000000,"fast_multiplier":2.5},
+        {"model":"gpt-5.6-terra","input_microusd_per_million":50000000,"cache_read_microusd_per_million":5000000,"cache_write_microusd_per_million":0,"output_microusd_per_million":300000000,"fast_multiplier":2.5},
+        {"model":"gpt-5.6-luna","input_microusd_per_million":5000000,"cache_read_microusd_per_million":500000,"cache_write_microusd_per_million":0,"output_microusd_per_million":30000000,"fast_multiplier":2.5},
+        {"model":"gpt-5.5","aliases":["codex-auto-review"],"input_microusd_per_million":125000000,"cache_read_microusd_per_million":12500000,"cache_write_microusd_per_million":0,"output_microusd_per_million":750000000,"fast_multiplier":2.5},
+        {"model":"gpt-5.5-cyber","input_microusd_per_million":312500000,"cache_read_microusd_per_million":31250000,"cache_write_microusd_per_million":0,"output_microusd_per_million":1875000000,"fast_multiplier":null},
+        {"model":"gpt-5.4","input_microusd_per_million":62500000,"cache_read_microusd_per_million":6250000,"cache_write_microusd_per_million":0,"output_microusd_per_million":375000000,"fast_multiplier":2.0},
+        {"model":"gpt-5.4-mini","input_microusd_per_million":18750000,"cache_read_microusd_per_million":1875000,"cache_write_microusd_per_million":0,"output_microusd_per_million":113000000,"fast_multiplier":null},
+        {"model":"gpt-5.3-codex","input_microusd_per_million":43750000,"cache_read_microusd_per_million":4375000,"cache_write_microusd_per_million":0,"output_microusd_per_million":350000000,"fast_multiplier":null},
+        {"model":"gpt-5.2","input_microusd_per_million":43750000,"cache_read_microusd_per_million":4375000,"cache_write_microusd_per_million":0,"output_microusd_per_million":350000000,"fast_multiplier":null}
+      ]
+    }
+  ]
+}

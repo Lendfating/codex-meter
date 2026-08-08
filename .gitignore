@@ -1,5 +1,4 @@
 /target/
 /web/node_modules/
 .runtime/
-.data/
 .DS_Store

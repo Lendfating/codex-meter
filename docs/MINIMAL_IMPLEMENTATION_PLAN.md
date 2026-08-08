@@ -9,7 +9,7 @@
 
 `FINAL_DESIGN.md` 保留为产品语义依据；旧 `FINAL_EXECUTION_PLAN.md` 和 `FINAL_EXECUTION_PLAN_REVIEW.md` 保留为历史研究，不再作为实施清单。旧计划中的工程化扩展项只有在用户以后明确要求时才重新进入范围。
 
-三个页面的完整指标、来源职责和七表字段以 [最小页面指标与七表数据模型](MINIMAL_DATA_MODEL.md) 为 M0 冻结契约。第一批来源采集的频率、去重和失败口径以 [第一批来源 Pipeline](MINIMAL_SOURCE_PIPELINE.md) 为准。后续实现不得回到旧设计的多层表结构，也不得加入该文档没有页面消费者的字段。
+三个页面的完整指标、来源职责和八表字段以 [最小页面指标与八表数据模型](MINIMAL_DATA_MODEL.md) 为 M0 冻结契约。第一批来源采集的频率、去重和失败口径以 [第一批来源 Pipeline](MINIMAL_SOURCE_PIPELINE.md) 为准。后续实现不得回到旧设计的多层表结构，也不得加入该文档没有页面消费者的字段。
 
 本计划只规划修改，不授权提交、推送、发布或删除用户数据。
 
@@ -97,7 +97,7 @@
 
 ```text
 JSONL ───────┐
-App Server ──┼─> SQLite 三张来源表 ─> report builder ─> 三张结果表 ─> /api/report ─> 单 HTML
+App Server ──┼─> SQLite 三张来源表 ─> report builder ─> 四张结果表 ─> /api/report ─> 单 HTML
 ccusage ─────┘
 ```
 
@@ -126,7 +126,7 @@ scripts/
 
 ## 5. 最小数据库
 
-SQLite 固定只保留三张来源表、三张页面结果表和一张人工容量表。窗口和模型不另建表，分别从分钟、Turn 结果聚合：
+SQLite 固定只保留三张来源表、四张页面结果表和一张人工容量表。模型从 Turn 结果聚合；Reset 窗口结果物化到独立结果表：
 
 | 表 | 内容 |
 | --- | --- |
@@ -135,8 +135,9 @@ SQLite 固定只保留三张来源表、三张页面结果表和一张人工容�
 | `source_ccusage` | ccusage 日级/Session 级、subscription/API、auto/standard 校验结果 |
 | `usage_daily` | 日历、日趋势和账号 Token 参考所需的日期结果 |
 | `usage_minute` | 分钟增量、官方采样和 Reset `window_id` 时间轴 |
+| `usage_window` | 每个 primary/secondary Reset 窗口的物化汇总 |
 | `usage_session` | 每 Turn 一行；页面按 root Session 合并 child/fork |
-| `capacities_v2`（逻辑名 `capacities`） | 20/100/200 人工确认值、账号映射和生效时间；旧 `capacities` 暂不动 |
+| `capacities` | 20/100/200 人工确认值、账号映射和生效时间 |
 
 字段和粒度详见 `MINIMAL_DATA_MODEL.md`。价格与公式保存在随代码发布的版本化静态配置中；文件游标保存在可删除、可重建的 sidecar 状态文件中。质量信息只使用每行一个紧凑字段，不建立通用质量实体和关系表。
 
@@ -148,7 +149,7 @@ SQLite 固定只保留三张来源表、三张页面结果表和一张人工容�
 
 - 扫描 active 和 archived；
 - 保留现有 last/cumulative 差分、重复通知、counter reset 和 fork replay 正确性；
-- JSONL 来源行只保存实际观察到的 `plan_type/provider/model/tier/session/root/turn`；跨源 `account_key/auth_kind/capacity_profile` 归一化后写入三张结果表，不建立复杂账号上下文图；
+- JSONL 来源行只保存实际观察到的 `plan_type/provider/model/tier/session/root/turn`；跨源 `account_key/auth_kind/capacity_profile` 归一化后写入四张结果表，不建立复杂账号上下文图；
 - 历史 quota 变化写入 `source_jsonl(kind=quota)`；
 - 启动完整扫描，此后按文件 mtime/offset 增量读取；不实现 dirty-range 队列。
 
@@ -215,7 +216,7 @@ capacities
 methodology
 ```
 
-M0 的字段消费者和七表落点以 `MINIMAL_DATA_MODEL.md` 为冻结契约。API 只负责把七表聚合成上述页面结构；字段名不得因实现方便继续扩张，没有页面消费者的字段不得加入。Turn 作为 `sessions[]` 的可展开明细返回，Reset 窗口由 `usage_minute.window_id` 聚合，不增加新路由或新表。
+M0 的字段消费者和八表落点以 `MINIMAL_DATA_MODEL.md` 为冻结契约。API 只负责把八表聚合成上述页面结构；字段名不得因实现方便继续扩张，没有页面消费者的字段不得加入。Turn 作为 `sessions[]` 的可展开明细返回，Reset 窗口直接读取 `usage_window`，不增加新路由。
 
 不再为每张表和每种粒度建立单独路由。
 
@@ -237,7 +238,7 @@ M0 的字段消费者和七表落点以 `MINIMAL_DATA_MODEL.md` 为冻结契约�
 - `src/storage/repositories.rs`：收缩为最小表的直接查询；
 - `src/collectors/app_server.rs` 与 runtime：只保留三个账号方法；
 - `src/collectors/ccusage.rs`：只保留命令、sanitization、最新结果保存；
-- `src/rollups/*`：合并成一个 `report.rs`，直接刷新三张结果表；
+- `src/pipelines/result/materialize.rs`：从三张来源表重建四张结果表；`src/service/report.rs` 只读结果表；
 - `web/index.html`、`web/src/app.js`、`web/src/style.css`：合并为一个自包含页面，直接参考现有报告。
 
 ### 8.3 候选删除
@@ -273,9 +274,9 @@ M0 的字段消费者和七表落点以 `MINIMAL_DATA_MODEL.md` 为冻结契约�
 
 只做：
 
-- 建立 7 张表的新 baseline；
+- 建立 8 张表的新 baseline；
 - 接入现有 JSONL 扫描和正确性算法；
-- 在 `report.rs` 直接生成日、分钟、模型、Session 和 Reset 窗口结果；
+- 在第二批 Pipeline 物化日、分钟、Reset 窗口和 Turn/Session 结果，`report.rs` 只读这些结果；
 - 接入静态价格和人工容量。
 
 门禁：参考 fixture 的 Token、模型、Session 和日期结果与参考报告/ccusage 一致；所有未知金额保持空值。
@@ -322,7 +323,7 @@ M0 的字段消费者和七表落点以 `MINIMAL_DATA_MODEL.md` 为冻结契约�
 - 验证 start/restart/stop 和 Web 访问；
 - 在真实历史上人工检查三个页面。
 
-门禁：无未使用模块；无页面消费者的 API 为 0；新模型表不超过 7 张（过渡期允许旧表保留）；核心源码显著少于当前规模；所有保留测试通过。
+门禁：无未使用模块；无页面消费者的 API 为 0；目标表固定为 8 张（过渡期允许旧归档表保留）；核心源码显著少于当前规模；所有保留测试通过。
 
 ## 10. 完成定义
 
@@ -347,6 +348,16 @@ M0 的字段消费者和七表落点以 `MINIMAL_DATA_MODEL.md` 为冻结契约�
 - 不允许以“以后可能需要”为由保留通用框架；
 - 不允许把骨架、表或 API 存在描述为完成；
 - 不提交、不推送，除非用户明确要求。
+
+## 12. 2026-08-07 当前执行记录
+
+本节是本轮已执行内容的证据记录，覆盖范围严格限定为第一批 root 修复和第二批结果 Pipeline；前端、App Server 采集协议、ccusage 命令与旧归档均未改动。
+
+| 计划任务 | 实现文件 | 测试/真实验收 | 页面或 API 验收 | 当前状态 |
+| --- | --- | --- | --- | --- |
+| M1 第一批：写入最终 root_session_id | `src/pipelines/source/jsonl.rs`, `src/db.rs` | `cargo test`；父链/环检测；真实运行库 14,494 条 source 行无未解析 root，未发现把中间父节点当 root | `usage_session.root_session_id` 直接使用来源最终根 | 已验证 |
+| M1 第二批：去重、跨日/Reset Turn 拆分、reasoning_effort、mixed_plan、官方百分比 | `src/pipelines/result/materialize.rs` | `cargo test` 35/35；dedupe、跨日 Turn、Reset/官方百分比回归测试 | `usage_daily`、`usage_minute`、`usage_session` 字段可读 | 已验证 |
+| M1 第二批：物化 Reset/周窗口 | `config/schema.sql`, `src/db.rs`, `src/pipelines/result/materialize.rs`, `src/service/report.rs` | 真实运行库八表；`usage_window=1`、`usage_daily=20`、`usage_minute=3695`、`usage_session=1530`；`PRAGMA integrity_check=ok` | `/api/report.quota_windows` 直接读取 `usage_window` | 已验证 |
 
 ## 12. 精审结论
 
