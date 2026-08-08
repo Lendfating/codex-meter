@@ -306,6 +306,19 @@ pub fn pricing_version() -> String {
         .unwrap_or_else(|_| "pricing-unavailable".to_owned())
 }
 
+pub fn capacity_defaults() -> Value {
+    ProjectConfig::embedded()
+        .map(|config| {
+            let defaults = &config.app.capacity_defaults;
+            json!({
+                "usd20": defaults.usd20,
+                "usd100": defaults.usd100,
+                "usd200": defaults.usd200
+            })
+        })
+        .unwrap_or_else(|_| json!({"usd20": 3200, "usd100": 16000, "usd200": 64000}))
+}
+
 pub fn price_card() -> Vec<Value> {
     let Ok(config) = ProjectConfig::embedded() else {
         return Vec::new();

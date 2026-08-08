@@ -1,0 +1,10 @@
+{
+  "timezone": "Asia/Shanghai",
+  "bind": "127.0.0.1:18778",
+  "codex_home": null,
+  "capacity_defaults": {
+    "usd20": 3200,
+    "usd100": 16000,
+    "usd200": 64000
+  }
+}

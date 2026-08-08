@@ -43,21 +43,13 @@ totalTokens = 非缓存输入 + Cache Read + 输出
 
 因此 7 月 14 日和 8 月 3 日的原始 Token 量是同量级且基本对齐的。若某日期差异达到数量级，优先检查：比较的是否是 `Input` 而非 `totalTokens`、本机是否混入 `plan_type` 缺失的 API/第三方日志、账号是否在其他机器使用，以及 App Server bucket 是否已经结算。
 
-### 0.3 周窗口百分比不是每日 Token 的直接显示
+### 0.3 周窗口百分比：官方为准，本机为估算
 
-本机脚本中的周窗口百分比是估算值，不是 App Server 官方窗口百分比。当前经验公式为：
-
-```text
-估算周占比 = 登录 Token × 经验倍率 ÷ 人工确认的周容量
-```
-
-例如 7 月 14 日选择 Plus 假定容量 `1.67G`、经验倍率为 `10` 时：
-
-```text
-173,490,735 × 10 ÷ 1,670,000,000 ≈ 103.89% → 页面显示 104%
-```
-
-这并不表示 JSONL 多算了 4%，而是说明 `1.67G` 和 `×10` 只是近似参数。官方窗口百分比应优先来自 App Server `account/rateLimits/read` 的 `usedPercent`；历史本机百分比只能标记为 `estimated`，不能伪装成官方 Credit 账单。
+本机脚本中的周窗口百分比是估算值，不是 App Server 官方窗口百分比。当前实现使用
+真实 Credit 计算：本机窗口 Credit 累计 ÷ 人工确认的周容量（`capacities`），
+页面同时展示官方窗口百分比（来自 App Server/JSONL quota 采样）与本机估算占比，
+两者分栏展示、不互相覆盖。早期原型使用的“登录 Token × 经验倍率 ÷ 假定容量”
+公式已废弃，不再作为计算依据。
 
 ### 0.4 实现原则
 
@@ -131,7 +123,7 @@ JSONL 的本地精度接近事件级，不依赖 1 分钟轮询。采集器不�
 - 本机 Token 来自 JSONL 去重增量，账号 Token 来自 `account/usage/read.dailyUsageBuckets`。
 - 账号每日 Token 可能跨机器，但没有模型、Fast、价格和 Credit 拆分；只用于历史核对和“未观测 Token”参考。
 - 只有已结算日期、同一账号且没有 API/账号混杂时，才计算 `max(account_tokens - local_tokens, 0)` 和本机覆盖率；当前日期不把缺失 bucket 当作 0。
-- 该维度不参与 Credit、周窗口占比、容量自动确认或价格回填；详情见 [Token 使用参考维度](TOKEN_USAGE_REFERENCE.md)。
+- 该维度不参与 Credit、周窗口占比、容量自动确认或价格回填；详情见 [数据来源参考的 Token 参考维度](DATA_SOURCE_REFERENCE.md)。
 
 ### 3.4 ccusage
 

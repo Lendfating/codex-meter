@@ -1,7 +1,7 @@
 # 数据来源与职责边界参考
 
-> 本文是 Codex Meter 执行阶段的数据来源参考。它补充并解释
-> [最终执行计划](FINAL_EXECUTION_PLAN.md)，不替代数据库 schema、计算公式或验收标准。
+> 本文是 Codex Meter 的数据来源调研参考，解释 JSONL、App Server、ccusage
+> 的字段来源、口径和边界，不替代数据库 schema、计算公式或验收标准。
 
 ## 1. 总体结论
 
@@ -284,4 +284,72 @@ flowchart LR
 一句话总结：
 
 > JSONL 负责“本机发生了什么”；App Server 负责“账号当前的官方状态是什么”；ccusage 负责“用成熟实现把本机历史重新汇总并校验”；价格和套餐容量负责“如何把本机 Token 换算成 Credit 和美元”。
+
+## 12. Token 参考维度（由原 TOKEN_USAGE_REFERENCE 合并）
+
+Token 维度是参考数据源，不是订阅 Credit 或周窗口的权威账本。它回答两个问题：
+本机 JSONL 观察到每天多少 Token；当前 ChatGPT 账号的接口在每天维度报告多少
+Token。两者用于核对历史、发现采集缺口、估算“本机之外的未观测 Token”，
+不能直接回答本机消耗了多少 Credit，也不能替代 `account/rateLimits/read` 的窗口剩余百分比。
+
+### 12.1 两个来源
+
+- 本机 JSONL：`token_count` 事件提供 `last_token_usage`（最近增量）、
+  `total_token_usage`（线程累计）、输入/缓存/输出/推理和总 Token、事件时间、
+  session/turn、模型、provider、Fast/Standard。本机每日 Token 必须从去重后的
+  增量事件或累计值差分得到，不能把每条 `total_token_usage` 直接相加。
+- App Server：`account/usage/read` 返回账号侧每日 Token 画像，典型字段
+  `summary.lifetimeTokens`、`summary.peakDailyTokens` 和
+  `dailyUsageBuckets[].{startDate,tokens}`。该接口没有模型、输入/输出拆分、
+  Fast 状态、价格版本或 Credit 拆分，因此只能进入 Token 参考维度。账号身份只
+  保存哈希键，不保存邮箱、Access Token 或完整响应。
+
+### 12.2 日期对齐
+
+当前按本机 `Asia/Shanghai` 对齐日期：JSONL 事件先转换为 `local_date`；App
+Server 原始 `startDate` 原样保存，同时按同一 `local_date` 作为比较键；不把
+App Server 日期强行解释成 UTC 或美国时区。App Server schema 只给
+`YYYY-MM-DD`，没有公开时区语义，因此这是当前可操作决定，不是官方保证。
+2026-08-04 验证中，账号 bucket 与 Asia/Shanghai 的本机日汇总更接近。
+
+账号级每日统计是异步画像，不是实时计数器：今天的 bucket 可能缺失，昨天的数据
+也可能在一段时间后才补齐。每个账号日期要有 freshness 状态：
+`pending`（今天或最近一天尚未出现）、`stale`（接口有返回但可能后台补写）、
+`settled`（已超过观察窗口且两次读取稳定）、`unavailable`（接口失败或认证类型
+不支持）。采集策略为启动/重连读一次、每 6 小时读一次、本机日期跨天后额外读一次，
+不为追踪当天 Token 而每分钟拉取。
+
+### 12.3 未观测 Token 与覆盖率
+
+```text
+account_tokens(d)     = App Server dailyUsageBuckets[d].tokens
+local_tokens(d)       = 本机 JSONL 去重后的每日 Token
+unobserved_tokens(d)  = max(account_tokens(d) - local_tokens(d), 0)
+coverage_ratio(d)     = local_tokens(d) / account_tokens(d)
+```
+
+`unobserved_tokens` 是“另一台机器 + 其他未观测来源 + 口径误差”的粗略估计，
+不是另一台机器的精确 Token。`account_tokens=0` 时 `coverage_ratio` 必须为
+null；本机 Token 大于账号 Token 时差额显示为 0 并标记不可比较，不能把负数解释成
+另一台机器“使用了负 Token”。只有 bucket 已 `settled`、日期/账号/来源已对齐、
+归属确认、无 JSONL 缺读或归档去重异常时才允许展示差额，否则显示“不可比较”。
+
+### 12.4 为什么不能用 Token 直接算 Credit
+
+同样数量的 Token 会因模型、输入/缓存/输出构成、长上下文、价格版本和 Fast 状态
+产生不同 Credit，账号级每日 Token 又没有这些拆分。因此 Token 参考值不进入首页
+正式的订阅窗口百分比；不用 `account_tokens` 反推 20/100/200 周容量；不用
+`coverage_ratio` 代替本机 Credit 占比；本机正式 Credit 仍来自 JSONL + ccusage
++ 版本化价格 + Fast 差分。Token 维度可以帮助发现“本机 Credit 曲线和账号窗口
+曲线明显不一致”，但只能触发诊断或降低质量等级，不能自动改写人工确认的容量。
+
+### 12.5 存储与展示落点
+
+- 账号日 Token、freshness、未观测 Token、覆盖率落在 `usage_daily`；
+  原始 bucket 保留在 `source_app_server.daily_tokens_json`。
+- 用量主页每日详情展示本机 Token、账号 Token、未观测 Token/覆盖率、
+  pending/stale/settled 标签和“参考维度，不参与 Credit 百分比”的固定说明；
+  当前日期只显示本机实时值，历史已结算日期才绘制本机/账号 Token 对比线。
+- 容量标定页可将 Token 对比作为辅助证据（是否同量级、是否存在未观测差额、
+  数据是否延迟），但不能直接改变 `confirmed` 容量。
 

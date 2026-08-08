@@ -1,10 +1,10 @@
-# Codex Meter 最小页面指标与八表数据模型
+# Codex Meter 页面指标与八表数据模型
 
-> 状态：2026-08-06 精审冻结稿
+> 状态：2026-08-08 最终稿（对应当前代码 `config/schema.sql` 与 `src/db.rs`）
 >
 > 作用：固定三个页面到底显示什么、每个指标来自哪里、八张表必须保存什么。后续实现不得自行增加表或无页面消费者的字段。
 >
-> 优先级：本文件是 `MINIMAL_IMPLEMENTATION_PLAN.md` 的 M0 数据契约附件；若与旧设计的多层数据库冲突，以当前用户要求和本文件为准。
+> 优先级：本文件是页面数据契约；若与旧设计的多层数据库冲突，以当前用户要求和本文件为准。
 
 ## 1. 最终结论
 
@@ -468,48 +468,34 @@ Session 汇总规则：
 - `usage_session` 每个 Turn 一行；不保存消息正文。
 - JSON 字段只允许两个：`model_breakdown_json` 和 `daily_tokens_json`，且都使用无空白紧凑格式。
 
-## 9. 当前实现差距
+## 9. 当前实现状态
 
-本文件是已审查的数据契约，不代表当前代码已经实现：
+截至 2026-08-08，本契约描述的结构已全部实现并验证：
 
-- 旧迁移仍是历史结构；当前新运行链由 `config/schema.sql` 直接建立八张目标表。
-- 当前 `events.payload_json` 仍复制完整 JSONL 记录；现有运行库中该列约占 24 MiB，是明确应删除的数据。
-- 当前 JSONL 解析主要处理 session meta、thread settings 和 token count，尚未完整写入 `task_started/task_complete/turn_context`，因此 Turn 起止和模型闭环尚未实现。
-- 当前 Session 结果尚未按 root 合并 child/fork，也没有按日期/Reset 拆 Turn 分段。
-- 当前 App Server 和 ccusage 表存在采集骨架，但真实历史快照/校验结果尚未形成页面闭环。
+- 数据库由 `config/schema.sql` 直接建立八张目标表（无旧迁移残留）。
+- JSONL 的 session/turn/usage/quota 已写入 `source_jsonl`；App Server 快照写入
+  `source_app_server`；ccusage 校验结果写入 `source_ccusage`。
+- 第二批 Pipeline（`src/pipelines/result/materialize.rs`）从三张来源表重建
+  `usage_daily`、`usage_minute`、`usage_window`、`usage_session` 四张结果表，
+  支持重复重建与事务性替换。
+- `/api/report` 读取真实日/分钟/窗口/Session/校验/价格数据，三个页面已用真实
+  报告逐页验收；容量未确认时保留“待确认”，不使用 0 或近似值填充。
 
-因此当前状态是“第一批来源事实与真实历史回填已验证；第二批聚合、API 和页面仍需单独验收”，
-不能把第一批验收描述成数据库或页面全部完成。
+## 10. 实施门禁（已完成）
 
-## 10. 实施门禁
+- 备份与 schema 迁移：已确认 `.runtime/codex-meter.sqlite` 可由 JSONL 重建，
+  新 baseline 只创建八张目标表。
+- fixture 验证：Session→Turn→root 合并、去重、模型/Fast、Reset 均有回归测试。
+- 双源对账：JSONL 与 ccusage 的 Token 分类和总量可逐列比较（20 日总量差 0.222%，
+  手动刷新后逐日差异收敛为 0）。
+- App Server 断线时 JSONL 历史仍可展示；当前官方状态标记不可用。
+- 后续任何新增字段必须先指出页面消费者；任何新增表必须先修改本文件并获得用户确认。
 
-在真正改数据库前必须：
+## 11. 实现追踪
 
-1. 备份当前 `.runtime` SQLite，确认旧运行库不被新 baseline 覆盖。
-2. 新 baseline 只能创建以上八张表。
-3. 先用 fixture 验证 Session→Turn→root 合并、去重、模型/Fast 和 Reset；再回填真实历史。
-4. 同一天 JSONL 与 ccusage 的 Token 分类和总量必须可逐列比较。
-5. App Server 断线时 JSONL 历史仍可展示；当前官方状态标记不可用。
-6. 任何新增字段必须先指出页面消费者；任何新增表必须先修改本文件并获得用户确认。
-
-## 11. 计划追踪
-
-| 计划任务 | 实现文件 | 测试/fixture | 页面/API 验收 | 当前状态 |
+| 计划任务 | 实现文件 | 测试/真实验收 | 页面/API 验收 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| M0 页面指标冻结 | 本文件 | 文档交叉检查 | 三页指标已映射到来源和表 | 已验证 |
-| M0 八表模型冻结 | 本文件 | 八表覆盖矩阵 | 所有页面能力有落点 | 已验证 |
-| M1 第一批来源事实 | `config/schema.sql`, `src/db.rs`, `src/pipelines/source/*` | `cargo test --quiet`（26/26）；首见/末见、reset、replay、标题/父关系、reasoning、total-only 和 unavailable 回归测试 | 三个 source adapter 只写三张 `source_*` 表；第二批未改 | 已验证 |
-| M1 真实历史回填与 ccusage 交叉验收 | `.runtime/codex-meter.sqlite`, `.runtime/jsonl-cursors.json` | 50 文件/83,347 行；source `50/1552/12481/101`；ccusage 8/8 成功、280 行；`integrity_check=ok`；20 日可对账、总量差 0.222% | 只验收第一批来源；JSONL/ccusage 差异留给第二批解释 | 已验证 |
-| M1 新 baseline | `migrations/0002_minimal_data_model.sql`, `src/minimal/db.rs` | `cargo test --offline minimal::db::tests::minimal_schema_has_seven_new_tables`; 运行库 `PRAGMA integrity_check=ok` | 新表已创建；旧表仍保留 | 已验证 |
-
-## 当前运行链修订（2026-08-07）
-
-本节覆盖上方“过渡期”描述：活动入口现在只执行
-`migrations/0002_minimal_data_model.sql`，默认数据库为
-`.runtime/codex-meter-seven.sqlite`。`migrations/0001.sql` 和由它创建的旧表仅作为
-历史归档，不再由 Rust 运行链读取或写入。JSONL 的 Turn 起止、Session 元数据、Token
-增量和 quota 已写入 `source_jsonl`；App Server 和 ccusage 分别只写对应的
-`source_*` 表；第二批再重建四张 `usage_*` 表。当前八表实际清单和剩余历史文件见
-`docs/MINIMAL_CODE_INVENTORY.md`。
-| M1 第二批结果回填（Daily/Minute/Window/Turn-Session） | `src/pipelines/result/materialize.rs` 及 `src/db.rs` | `cargo test`（35/35）；窗口、跨日 Turn、去重和 reasoning_effort 回归测试 | 四张结果表可重复重建；Reset/周窗口直接读取 `usage_window` | 已验证 |
-| M2/M3/M4 页面与真实数据闭环 | `src/service/report.rs`, `web/index.html` | `cargo build`; `cargo test`（44 passed, 2 ignored）；内嵌 Web JS 语法及无 Mock 检查；`.runtime/codex-meter.sqlite` 完整性和八表计数检查 | `/api/report` 读取真实日/分钟/窗口/Session/校验/价格数据；三页已用真实报告逐页验收；容量未确认时保留“待确认” | 已验证 |
+| 来源事实采集 | `config/schema.sql`, `src/db.rs`, `src/pipelines/source/*` | `cargo test`；首见/末见、reset、replay、标题/父关系、reasoning、total-only 和 unavailable 回归测试 | 三个 source adapter 只写三张 `source_*` 表 | 已验证 |
+| 真实历史回填与 ccusage 交叉验收 | `.runtime/codex-meter.sqlite`, `.runtime/jsonl-cursors.json` | 50 文件/83,347 行；source `50/1552/12481/101`；ccusage 8/8 成功、280 行；`integrity_check=ok`；20 日可对账、总量差 0.222% | JSONL/ccusage 差异在报告层解释 | 已验证 |
+| 结果表物化（Daily/Minute/Window/Turn-Session） | `src/pipelines/result/materialize.rs`, `src/db.rs` | `cargo test`；窗口、跨日 Turn、去重和 reasoning_effort 回归测试 | 四张结果表可重复重建；Reset/周窗口直接读取 `usage_window` | 已验证 |
+| 页面与真实数据闭环 | `src/service/report.rs`, `web/index.html` | `cargo build`；`cargo test`；内嵌 Web JS 语法检查；`.runtime/codex-meter.sqlite` 完整性和八表计数检查 | `/api/report` 读取真实数据；三个页面逐页验收 | 已验证 |

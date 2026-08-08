@@ -21,6 +21,36 @@ pub enum ConfigError {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CapacityDefaults {
+    #[serde(default = "default_usd20_credit")]
+    pub usd20: f64,
+    #[serde(default = "default_usd100_credit")]
+    pub usd100: f64,
+    #[serde(default = "default_usd200_credit")]
+    pub usd200: f64,
+}
+
+impl Default for CapacityDefaults {
+    fn default() -> Self {
+        Self {
+            usd20: default_usd20_credit(),
+            usd100: default_usd100_credit(),
+            usd200: default_usd200_credit(),
+        }
+    }
+}
+
+fn default_usd20_credit() -> f64 {
+    3200.0
+}
+fn default_usd100_credit() -> f64 {
+    16000.0
+}
+fn default_usd200_credit() -> f64 {
+    64000.0
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     #[serde(default = "default_timezone")]
     pub timezone: String,
@@ -28,6 +58,8 @@ pub struct AppConfig {
     pub bind: String,
     #[serde(default)]
     pub codex_home: Option<PathBuf>,
+    #[serde(default)]
+    pub capacity_defaults: CapacityDefaults,
 }
 
 impl Default for AppConfig {
@@ -36,6 +68,7 @@ impl Default for AppConfig {
             timezone: default_timezone(),
             bind: default_bind(),
             codex_home: None,
+            capacity_defaults: CapacityDefaults::default(),
         }
     }
 }

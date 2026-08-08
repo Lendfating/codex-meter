@@ -51,18 +51,18 @@ daily/session 和 `auto`/`standard`，共 8 个小结果）：
 
 ## 最小 API
 
-- `GET /api/health`：服务和 7 张正式表是否正常；
+- `GET /api/health`：服务和 8 张正式表是否正常；
 - `GET /api/report?date=YYYY-MM-DD`：页面一、二、三所需的全部投影；
 - `POST /api/refresh`：重新扫描 JSONL；
 - `POST /api/capacities`：保存人工确认的 20/100/200 美元容量。
 
-页面只有三块：用量（日历、趋势、分钟/模型/Session 和 JSONL/ccusage 对账）、容量估算（Reset 窗口候选和人工确认值）、计算说明（公式、价格版本和数据来源）。日、分钟、模型、Session、Reset 窗口都从 7 张事实表在内存中聚合，不再维护一套对应的派生表。
+页面只有三块：用量（日历、趋势、分钟/模型/Session 和 JSONL/ccusage 对账）、容量估算（Reset 窗口候选和人工确认值）、计算说明（公式、价格版本和数据来源）。日、分钟、模型、Session、Reset 窗口都从 8 张事实表在内存中聚合，不再维护一套对应的派生表。
 
 ## 文档
 
-- [最小执行计划](docs/MINIMAL_IMPLEMENTATION_PLAN.md)：当前唯一执行边界和阶段门禁；
 - [最终设计](docs/FINAL_DESIGN.md)：完整目标和页面信息；
-- [数据来源参考](docs/DATA_SOURCE_REFERENCE.md)：JSONL、App Server、ccusage 的字段调研；
-- [执行状态](docs/MINIMAL_IMPLEMENTATION_STATUS.md)：每个阶段的测试和验收证据。
+- [数据模型](docs/DATA_MODEL.md)：三页指标口径与八张表的最终结构；
+- [来源 Pipeline](docs/SOURCE_PIPELINE.md)：JSONL、App Server、ccusage 的采集与物化；
+- [数据来源参考](docs/DATA_SOURCE_REFERENCE.md)：JSONL、App Server、ccusage 的字段调研与 Token 参考维度。
 
 项目不上传本地 JSONL、账号信息或 Token 数据，也不会自动修改订阅容量结论。

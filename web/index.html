@@ -488,6 +488,10 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       return plan ? String(plan) : '订阅待识别';
     }
     function capacityDefaults(){
+      var configured=report && report.methodology && report.methodology.capacity_defaults;
+      if(configured && number(configured.usd20)!=null && number(configured.usd100)!=null && number(configured.usd200)!=null){
+        return {usd20:number(configured.usd20),usd100:number(configured.usd100),usd200:number(configured.usd200)};
+      }
       return {usd20:3200,usd100:16000,usd200:64000};
     }
     function confirmedCapacity(){

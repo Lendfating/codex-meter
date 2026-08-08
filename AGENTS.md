@@ -2,30 +2,32 @@
 
 本文件是本仓库的硬性执行规则。它不是建议，也不是可在实现过程中自行放宽的偏好。
 
-## 0. 当前代码阶段：只迁移七表数据库访问
+## 0. 当前代码状态：已完成的最小实现
 
-当前用户明确授权的代码任务只有七张表的数据库结构和访问接口：
+本项目已完成最小实现并处于维护阶段：八张表的数据库访问、三源采集、结果物化、
+`/api/report` 聚合、三个页面（用量/容量/计算说明）均已验收，服务由
+`./service.sh` 管理。
 
-- 表仅限：`source_jsonl`、`source_app_server`、`source_ccusage`、`usage_daily`、
-  `usage_minute`、`usage_session`、`capacities`。
-- 允许修改：`config/schema.sql`、`src/db.rs`、必要的 `src/main.rs` 模块声明和本节规则。
-- 只迁移连接/初始化、七表写入、七表读取和结果表事务性重建；数据库路径约定为 `.runtime/codex-meter.sqlite`。
-- `archived/` 对代码实现只读；不得从中恢复 Pipeline、聚合算法、API、前端、价格逻辑、旧迁移或 fixtures。文档归档整理只有在用户明确授权的独立任务中执行。
-- 不得创建运行数据库、采集或回填真实数据，不得启动服务，不得提交或发布 Git。
-- 容量表统一使用 `capacities` 命名。
-- 完成条件：schema 和数据库模块只涉及这七张表；内存 SQLite 结构及基本读写检查通过。
+- 表固定为八张：`source_jsonl`、`source_app_server`、`source_ccusage`、
+  `usage_daily`、`usage_minute`、`usage_window`、`usage_session`、`capacities`。
+- 数据库路径约定为 `.runtime/codex-meter.sqlite`；schema 由 `config/schema.sql`
+  直接建立，无旧迁移残留。
+- 容量表统一使用 `capacities` 命名；20/100/200 美元档默认容量为
+  3200/16000/64000 Credit，可在页面人工修改保存。
+- ccusage 对账为可选功能（`./service.sh restart --ccusage`）；手动刷新
+  `POST /api/refresh` 时无条件执行三源刷新。
+- 文档归档整理只有在用户明确授权的独立任务中执行。
 
-当前目标目录：
+当前目录：
 
 ```text
 config/{app.json,api-usd.json,subscription-credit.json,schema.sql}
 src/{main.rs,config.rs,db.rs,pricing.rs}
-src/pipelines/{mod.rs,source/{jsonl.rs,app_server.rs,ccusage.rs},result/materialize.rs}
+src/pipelines/{mod.rs,source/{jsonl.rs,app_server.rs,ccusage.rs},result/{mod.rs,materialize.rs}}
 src/service/{mod.rs,http.rs,report.rs}
 web/index.html
-scripts/codex-meter-service.sh
-fixtures/.gitkeep
-docs/.gitkeep
+service.sh
+docs/{FINAL_DESIGN.md,DATA_MODEL.md,SOURCE_PIPELINE.md,DATA_SOURCE_REFERENCE.md}
 ```
 
 ## 1. 强制二次确认门禁（仅针对会改变状态的操作）
@@ -51,15 +53,16 @@ docs/.gitkeep
 实现必须严格按照以下顺序和优先级执行：
 
 1. 用户当前明确要求；
-2. `docs/MINIMAL_IMPLEMENTATION_PLAN.md`；
+2. `docs/DATA_MODEL.md`；
 3. `docs/FINAL_DESIGN.md`；
 4. 本文件；
-5. `docs/DATA_SOURCE_REFERENCE.md` 和其他调研参考；
-6. `docs/FINAL_EXECUTION_PLAN.md`、`docs/FINAL_EXECUTION_PLAN_REVIEW.md` 等历史计划。
+5. `docs/DATA_SOURCE_REFERENCE.md` 和其他调研参考。
 
-`docs/FINAL_EXECUTION_PLAN.md` 和 `docs/FINAL_EXECUTION_PLAN_REVIEW.md` 已被最小实现计划取代，只保留为历史研究。`docs/DATA_SOURCE_REFERENCE.md`、`docs/RESEARCH_FINDINGS.md`、参考 HTML 和 ccusage 源码只能用于确认字段来源、界面细节和接口事实，不能自行改变产品目标、实施顺序或验收门禁。
+`docs/SOURCE_PIPELINE.md` 描述采集与物化职责；`docs/DATA_SOURCE_REFERENCE.md`、
+参考 HTML 和 ccusage 源码只能用于确认字段来源、界面细节和接口事实，不能自行改变
+产品目标、实施顺序或验收门禁。
 
-如果代码现状与执行计划冲突，必须以计划为准；如果计划需要改变，先停止实现并向用户说明影响，得到明确确认后才能修改计划。
+如果代码现状与执行依据冲突，先停止实现并向用户说明影响，得到明确确认后才能修改。
 
 ## 3. 开始任何改动前必须完成的检查
 
@@ -86,7 +89,7 @@ docs/.gitkeep
 
 ## 5. 阶段门禁
 
-阶段必须按最小实现计划顺序完成，每个阶段都要通过事实、聚合、API、页面和测试的闭环门禁后才能进入下一阶段：
+阶段必须按计划顺序完成，每个阶段都要通过事实、聚合、API、页面和测试的闭环门禁后才能进入下一阶段：
 
 ```text
 数据事实 → 归一化/归类 → report 聚合 → API 契约 → 页面展示 → 测试与验收

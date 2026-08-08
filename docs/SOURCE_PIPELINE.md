@@ -1,8 +1,9 @@
-# Codex Meter 第一批来源 Pipeline
+# Codex Meter 来源 Pipeline
 
-状态：2026-08-07，M1 来源事实链与真实历史回填已验收
+状态：2026-08-08，来源事实链、真实历史回填与结果物化均已验收
 
-这条 Pipeline 只做一件事：把三个来源采集、脱敏、归一化后写入三张 `source_*` 表。它不计算日、分钟、Session 或 Reset 报表；那些属于第二批 Pipeline。
+这条 Pipeline 把三个来源采集、脱敏、归一化后写入三张 `source_*` 表，再由第二批
+Pipeline 从它们重建四张 `usage_*` 结果表。
 
 ```text
 JSONL 文件 ───────┐
@@ -27,7 +28,7 @@ ccusage 仍然是验证器。它可以重新读取 JSONL，但不能覆盖 `sour
 - 启动时扫描 `sessions/` 和 `archived_sessions/`，完成历史回填。
 - 新来源第一次运行从文件头回填 `source_jsonl`；之后使用与数据库同目录的
   `*.jsonl-cursors.json` sidecar 保存偏移，不把游标混入八张正式表。
-- 默认每 10 秒扫描一次；只读取文件游标之后的新完整行，文件未变化时快速跳过。
+- 默认每 5 分钟扫描一次；只读取文件游标之后的新完整行，文件未变化时快速跳过。
 - 最后一行没有换行符时暂不处理，下一轮继续。
 - 文件被截断或游标超出长度时从文件头重扫；`source_key` 保证不会重复写入。
 - sidecar 只保存路径、偏移和摘要等可重建游标；删除 sidecar 后会安全地从文件头重扫，
@@ -57,15 +58,16 @@ App Server 轮询只保留三个方法：
 - `account/rateLimits/read`：启动时和每 60 秒一次；
 - `account/usage/read`：启动时和每 6 小时一次。
 
-当前服务只有设置 `CODEX_METER_APP_SERVER_ON_BOOT=1` 才启动这个轮询，避免本地没有 App Server 时反复拉起外部进程。失败时不写零值；没有成功快照时由查询层标记为 `unavailable`，并保留 JSONL 历史。
+App Server 始终启用，不需要环境变量开关。失败时不写零值；没有成功快照时由查询层
+标记为 `unavailable`，并保留 JSONL 历史。
 
 同一个脱敏状态摘要只保留一行，重复轮询只更新 `last_seen_at_ms`。账号身份只保存哈希键，不保存邮箱、Access Token 或完整响应。
 
 ### 2.3 ccusage
 
-- 启动执行由 `CODEX_METER_CCUSAGE_ON_BOOT=1` 控制；手工刷新执行由 `CODEX_METER_CCUSAGE_ON_REFRESH=1` 控制。
+- ccusage 对账是可选功能，由启动参数 `--ccusage`（环境变量 `CODEX_METER_CCUSAGE_ON=1`）开启。
+- 开启后：启动时执行一次、之后每小时自动执行一次、`POST /api/refresh` 手动刷新时无条件执行一次。
 - 一次运行固定执行 8 组：`daily/session × subscription/api × auto/standard`。
-- 只有 JSONL 本轮有新行或用户手工刷新时才适合执行；不按秒轮询。
 - 每个日期或原始 Session 一行，保存 Token 六字段、金额、模型紧凑汇总、参数和版本。
 - 命令失败也记录 `failed` 状态和范围键，不把失败伪装成零。
 

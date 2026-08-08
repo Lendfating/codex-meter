@@ -218,7 +218,8 @@ pub async fn build_report(
                 "api_usd = model/tier API price at event time",
                 "local_percent = credit / confirmed weekly credit"
             ],
-            "price_card": pricing::price_card()
+            "price_card": pricing::price_card(),
+            "capacity_defaults": pricing::capacity_defaults()
         },
         "audit": audit
     }))
