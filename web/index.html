@@ -664,6 +664,9 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     function resetMarkLine(labels,breaks){
       return {data:(breaks||[]).map(function(index){return {xAxis:index,label:{formatter:'Reset 线',position:'insideEndTop',color:'#8a9185',fontSize:10}}}),symbol:'none',lineStyle:{type:'dashed',color:'#b9c6bb',width:1.5}};
     }
+    function resetOverlaySeries(labels,mark){
+      return {name:'Reset 标记',type:'line',data:(labels||[]).map(function(){return null}),showSymbol:false,silent:true,legendHoverLink:false,tooltip:{show:false},lineStyle:{opacity:0},itemStyle:{opacity:0},yAxisIndex:0,markLine:mark};
+    }
     function baseTooltip(formats,tooltipDateFormatter,fillNulls,seriesList){
       var axisLabelFormatter=tooltipDateFormatter?function(params){var value=params&&params.value;return tooltipDateFormatter(value)}:undefined;
       return {
@@ -948,8 +951,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
         formatters={'Credit（当日）':creditText,'Credit（累计）':creditText};
         yFormatter=function(value){return compactNumber(value)};
       }
-      if(lines.length) lines[0].markLine=mark;
-      series=series.concat(lines);
+      series=series.concat(lines,[resetOverlaySeries(labels,mark)]);
       return baseOption(labels,series,{tooltip:dailyWindowTooltip(order,formatters),yFormatter:yFormatter,legendData:order,left:60});
     }
     function dailyWindowPercentOption(days){
@@ -963,8 +965,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       ],lines=windowLineSeries('官方剩余','#16a34a',model.groups.map(function(group){return group.officialRemainingPoints}),dates)
         .concat(windowLineSeries('官方累计已用','#2563eb',model.groups.map(function(group){return group.officialUsedPoints}),dates))
         .concat(windowLineSeries('本机累计周占比','#f59e0b',model.groups.map(function(group){return group.localPercentPoints}),dates,{lineStyle:{type:'dashed'}}));
-      if(lines.length) lines[0].markLine=mark;
-      series=series.concat(lines);
+      series=series.concat(lines,[resetOverlaySeries(labels,mark)]);
       var order=['当天本机使用','当天账号使用','官方剩余','官方累计已用','本机累计周占比'],formatters={};
       order.forEach(function(name){formatters[name]=percent});
       return baseOption(labels,series,{tooltip:dailyWindowTooltip(order,formatters),yFormatter:function(value){return value+'%'},max:100,left:60,legendData:order});
@@ -987,7 +988,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       var mark=resetMarkLine(labels,boundaries);
       if(metric==='token'){
         var local=forwardFill(minuteSeries(source,'token'));
-        series.push({name:'本机 Token（累计）',type:'line',color:'#16a34a',lineStyle:{width:2},data:seriesData(local,labels),showSymbol:false,markLine:mark});
+        series.push({name:'本机 Token（累计）',type:'line',color:'#16a34a',lineStyle:{width:2},data:seriesData(local,labels),showSymbol:false});
         legendData.push('本机 Token（累计）');formats.push(tokens);
         var account=win?accountTokenForWindow(win):accountTokenForDay(day);
         if(account!=null){
@@ -996,11 +997,11 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
         }
       }else if(metric==='api'){
         var api=forwardFill(minuteSeries(source,'api'));
-        series.push({name:'API 美元',type:'line',color:'#16a34a',lineStyle:{width:2},data:seriesData(api,labels),showSymbol:false,markLine:mark});
+        series.push({name:'API 美元',type:'line',color:'#16a34a',lineStyle:{width:2},data:seriesData(api,labels),showSymbol:false});
         legendData.push('API 美元');formats.push(money);
       }else if(metric==='credit'){
         var credit=forwardFill(minuteSeries(source,'credit'));
-        series.push({name:'Credit',type:'line',color:'#16a34a',lineStyle:{width:2},data:seriesData(credit,labels),showSymbol:false,markLine:mark});
+        series.push({name:'Credit',type:'line',color:'#16a34a',lineStyle:{width:2},data:seriesData(credit,labels),showSymbol:false});
         legendData.push('Credit');formats.push(creditText);
       }else{
         var used=source.map(function(row){return row?firstNumber(row,['official_percent','official_used_percent']):null});
@@ -1008,15 +1009,17 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
         var creditRun=forwardFill(minuteSeries(source,'credit')),cap=dayCapacity(day)||confirmedCapacity();
         var localPct=creditRun.map(function(value){return (value==null||cap==null||cap<=0)?null:value/cap*100});
         series=[
-          {name:'官方剩余',type:'line',color:'#16a34a',lineStyle:{width:2},data:seriesData(remaining,labels),showSymbol:false,connectNulls:true,markLine:mark},
+          {name:'官方剩余',type:'line',color:'#16a34a',lineStyle:{width:2},data:seriesData(remaining,labels),showSymbol:false,connectNulls:true},
           {name:'官方累计已用',type:'line',color:'#2563eb',lineStyle:{width:2},data:seriesData(used,labels),showSymbol:false,connectNulls:true},
           {name:'本机使用',type:'line',color:'#f59e0b',lineStyle:{width:2,type:'dashed'},data:seriesData(localPct,labels),showSymbol:false,connectNulls:true}
         ];
+        series.push(resetOverlaySeries(labels,mark));
         formats=[percent,percent,percent];
         legendData=['官方剩余','官方累计已用','本机使用'];
         opts.left=60;opts.formats=formats;opts.yFormatter=function(value){return value+'%'};opts.max=100;opts.legendData=legendData;opts.fillNulls=true;
         return baseOption(labels,series,opts);
       }
+      series.push(resetOverlaySeries(labels,mark));
       var formatter=metric==='api'?function(value){return '$'+compactNumber(value)}:function(value){return compactNumber(value)};
       opts.formats=formats;opts.yFormatter=formatter;opts.legendData=legendData;opts.left=60;
       return baseOption(labels,series,opts);
@@ -1086,11 +1089,12 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       var boundaries=rows.map(function(row,index){return row && (row.reset_marker||row.reset_boundary)?index:null}).filter(function(value){return value!=null});
       var mark=resetMarkLine(labels,boundaries);
       var series=[
-        {name:'官方剩余%',type:'line',color:'#16a34a',symbol:'none',lineStyle:{width:2},data:seriesData(remaining,labels),connectNulls:true,markLine:mark,yAxisIndex:0},
+        {name:'官方剩余%',type:'line',color:'#16a34a',symbol:'none',lineStyle:{width:2},data:seriesData(remaining,labels),connectNulls:true,yAxisIndex:0},
         {name:'官方累计已用%',type:'line',color:'#2563eb',symbol:'none',lineStyle:{width:2},data:seriesData(used,labels),connectNulls:true,yAxisIndex:0},
         {name:'本机累计周占比',type:'line',color:'#f59e0b',symbol:'none',lineStyle:{width:2,type:'dashed'},data:seriesData(localShare,labels),connectNulls:true,yAxisIndex:0},
         {name:'本机累计 Credit',type:'line',color:'#8b5cf6',symbol:'none',lineStyle:{width:2},data:seriesData(creditRun,labels),connectNulls:true,yAxisIndex:1}
       ];
+      series.push(resetOverlaySeries(labels,mark));
       var option=baseOption(labels,series,{formats:[percent,percent,percent,creditText],left:60,right:60,legendData:['官方剩余%','官方累计已用%','本机累计周占比','本机累计 Credit'],fillNulls:true,tooltipDateFormatter:function(value){return dateTimeShort(Number(value))},xFormatter:function(value){var ms=Number(value),date=new Date(ms);if(Number.isNaN(date.getTime()))return value;return (date.getMonth()+1)+'/'+date.getDate()},xInterval:Math.max(1,Math.floor(labels.length/12))});
       option.yAxis=[{type:'value',min:0,max:100,splitLine:{lineStyle:{color:'#e7ebe3'}},axisLabel:{color:'#8a9185',fontSize:10,formatter:function(value){return value+'%'}}},{type:'value',min:0,max:maxCredit,splitLine:{show:false},axisLabel:{color:'#8a9185',fontSize:10,formatter:function(value){return compactNumber(value)}}}];
       return option;
