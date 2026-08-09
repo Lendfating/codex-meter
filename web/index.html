@@ -691,13 +691,220 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       opts=opts||{};
       return {
         animation:false,
-        tooltip:baseTooltip(opts.formats,opts.tooltipDateFormatter,opts.fillNulls,series),
+        tooltip:opts.tooltip || baseTooltip(opts.formats,opts.tooltipDateFormatter,opts.fillNulls,series),
         legend:opts.legend===false?{show:false}:{top:2,right:10,itemWidth:16,itemHeight:8,textStyle:{fontSize:10,color:'#74786e'},data:opts.legendData},
         grid:{left:opts.left||54,right:opts.right||16,top:opts.legend===false?16:36,bottom:34},
         xAxis:{type:'category',boundaryGap:opts.boundaryGap!==false,data:labels,axisLine:{lineStyle:{color:'#e5e8df'}},axisLabel:{color:'#8a9185',fontSize:10,interval:opts.xInterval!=null?opts.xInterval:'auto',formatter:opts.xFormatter},axisTick:{show:false}},
         yAxis:{type:'value',min:0,max:opts.max,splitLine:{lineStyle:{color:'#e7ebe3'}},axisLabel:{color:'#8a9185',fontSize:10,formatter:opts.yFormatter},name:opts.yName||'',nameTextStyle:{color:'#8a9185',fontSize:10}},
         series:series
       };
+    }
+    function dayStartMs(date){
+      var parsed=parseDateKey(date);
+      return parsed ? parsed.getTime() : null;
+    }
+    function primaryQuotaWindows(){
+      var source=(report && report.quota_windows || []).filter(function(win){return win && Array.isArray(win.minutes)});
+      var primary=source.filter(function(win){
+        var kind=String(win.window_kind || win.limit_id || win.limit || '').toLowerCase();
+        return !kind || kind==='primary' || kind.indexOf('primary')>=0;
+      });
+      return (primary.length ? primary : source).map(function(win,index){
+        var rows=(win.minutes || []).map(normalizeMinute).filter(function(row){return number(row && row.minute_start_ms)!=null}).sort(function(a,b){return Number(a.minute_start_ms)-Number(b.minute_start_ms)});
+        return {
+          id:String(win.window_id || (win.window_kind || 'window')+'-'+index),
+          win:win,
+          rows:rows,
+          startMs:number(win.start_at_ms) || (rows.length ? Number(rows[0].minute_start_ms) : null),
+          startPercent:firstNumber(win,['first_official_percent','official_percent_start'])
+        };
+      }).filter(function(entry){return entry.startMs!=null}).sort(function(a,b){return Number(a.startMs)-Number(b.startMs)});
+    }
+    function canonicalDailyWindows(days){
+      if(!days || !days.length) return [];
+      var entries=primaryQuotaWindows();
+      if(!entries.length) return [];
+      // A non-zero first official value is a continuation fragment, not a
+      // new day-level reset.  Keep reset-like starts, then collapse multiple
+      // starts on the same date into one boundary with first/last timestamps.
+      var resetByDate=new Map();
+      entries.forEach(function(entry){
+        var startsAtReset=entry.startPercent!=null && entry.startPercent<=5;
+        if(!startsAtReset) return;
+        var date=dateKey(new Date(entry.startMs)),boundary=resetByDate.get(date);
+        if(!boundary){
+          resetByDate.set(date,{date:date,firstMs:entry.startMs,lastMs:entry.startMs});
+          return;
+        }
+        boundary.firstMs=Math.min(boundary.firstMs,entry.startMs);
+        boundary.lastMs=Math.max(boundary.lastMs,entry.startMs);
+      });
+      var rangeStart=dayStartMs(days[0].date),rangeEnd=dayStartMs(days[days.length-1].date)+86400000;
+      var boundaries=Array.from(resetByDate.values()).sort(function(a,b){return a.firstMs-b.firstMs});
+      var groups=[],cursor=entries[0].startMs;
+      boundaries.forEach(function(boundary){
+        // The first boundary can be the initial sample itself.  It does not
+        // create a prior segment, but its last timestamp is still the start
+        // of the next canonical segment for that date.
+        if(boundary.firstMs<=cursor){
+          cursor=Math.max(cursor,boundary.lastMs);
+          return;
+        }
+        groups.push({startMs:cursor,endMs:boundary.firstMs,hasEndBoundary:true});
+        cursor=boundary.lastMs;
+      });
+      groups.push({startMs:cursor,endMs:rangeEnd,hasEndBoundary:false});
+      groups.forEach(function(group,index){
+        var startEntry=entries.find(function(entry){return entry.startMs===group.startMs}) || entries.find(function(entry){return entry.startMs>=group.startMs}) || entries[0];
+        group.id=String(startEntry.id||('window-'+index));
+        group.startPercent=startEntry.startPercent;
+        group.entries=entries.filter(function(entry){return entry.startMs>=group.startMs && entry.startMs<group.endMs});
+        if(!group.entries.length) group.entries=[startEntry];
+        group.startDate=dateKey(new Date(group.startMs));
+        group.endDate=dateKey(new Date(group.endMs));
+        group.rows=group.entries.reduce(function(all,entry){return all.concat(entry.rows)},[]).filter(function(row){
+          var ms=number(row.minute_start_ms);
+          return ms!=null && ms>=group.startMs && ms<group.endMs;
+        }).sort(function(a,b){return Number(a.minute_start_ms)-Number(b.minute_start_ms)});
+      });
+      return groups.filter(function(group){return group.startMs<rangeEnd && group.endMs>=rangeStart});
+    }
+    function windowDates(group,days){
+      return days.map(function(day){return day.date}).filter(function(date){
+        return date>=group.startDate && date<=group.endDate;
+      });
+    }
+    function minuteValueForMetric(row,metric){
+      if(metric==='token') return firstNumber(row && row.usage,['total','tokens']);
+      if(metric==='api') return number(row && row.api_usd);
+      if(metric==='credit') return number(row && row.credit);
+      return null;
+    }
+    function cumulativeMinutePoints(group,days,metric){
+      var totals=new Map(),known=false,unknown=false;
+      group.rows.forEach(function(row){
+        var value=minuteValueForMetric(row,metric),date=String(row.local_date || dateKey(new Date(Number(row.minute_start_ms)))).slice(0,10),hasUsage=firstNumber(row && row.usage,['total','tokens'])!=null;
+        if(value==null){if(metric!=='token' && hasUsage) unknown=true;return}
+        known=true;totals.set(date,(totals.get(date)||0)+value);
+      });
+      if(!known || unknown) return null;
+      var dates=windowDates(group,days),points=new Map(),running=0;
+      dates.forEach(function(date,index){
+        if(index===0){
+          points.set(date,{value:0,dateKey:date,boundaryRole:'start',windowId:group.id});
+          running+=totals.get(date)||0;
+          return;
+        }
+        running+=totals.get(date)||0;
+        var isEnd=group.hasEndBoundary && date===group.endDate;
+        points.set(date,{value:running,dateKey:date,boundaryRole:isEnd?'end':null,windowId:group.id});
+      });
+      return points;
+    }
+    function cumulativeAccountPoints(group,days){
+      var dates=windowDates(group,days),points=new Map(),running=0,complete=true,dayByDate=new Map(days.map(function(day){return [day.date,day]}));
+      dates.forEach(function(date,index){
+        if(index===0){
+          points.set(date,{value:0,dateKey:date,boundaryRole:'start',windowId:group.id});
+        }else if(complete){
+          var value=accountTokenForDay(dayByDate.get(date));
+          if(group.hasEndBoundary && date===group.endDate){
+            points.set(date,{value:running,dateKey:date,boundaryRole:'end',windowId:group.id});
+          }else if(value==null){
+            complete=false;
+          }else{
+            running+=value;
+            points.set(date,{value:running,dateKey:date,boundaryRole:null,windowId:group.id});
+          }
+        }
+        if(index===0){
+          var startValue=accountTokenForDay(dayByDate.get(date));
+          if(startValue==null) complete=false;
+          else running+=startValue;
+        }
+      });
+      return points;
+    }
+    function officialWindowPoints(group,days){
+      var dailyMax=new Map(),latest=number(group.startPercent);
+      group.rows.forEach(function(row){
+        var value=firstNumber(row,['official_percent','official_used_percent']);
+        if(value==null) return;
+        var date=String(row.local_date || dateKey(new Date(Number(row.minute_start_ms)))).slice(0,10),current=dailyMax.get(date);
+        if(current==null || value>current) dailyMax.set(date,value);
+      });
+      if(latest==null && !dailyMax.size) return null;
+      var dates=windowDates(group,days),points=new Map();
+      dates.forEach(function(date,index){
+        var observed=dailyMax.get(date);
+        if(observed!=null) latest=latest==null?observed:Math.max(latest,observed);
+        if(index===0){
+          if(group.startPercent!=null) points.set(date,{value:group.startPercent,dateKey:date,boundaryRole:'start',windowId:group.id});
+        }else if(observed!=null){
+          points.set(date,{value:latest,dateKey:date,boundaryRole:null,windowId:group.id});
+        }
+        if(group.hasEndBoundary && date===group.endDate && latest!=null){
+          points.set(date,{value:latest,dateKey:date,boundaryRole:'end',windowId:group.id});
+        }
+      });
+      return points;
+    }
+    function mapPointValues(points,mapper){
+      if(!points) return null;
+      var result=new Map();
+      points.forEach(function(point,date){result.set(date,Object.assign({},point,{value:mapper(point.value)}))});
+      return result;
+    }
+    function windowLineSeries(name,color,pointSets,dates,options){
+      var result=[];
+      (pointSets || []).forEach(function(points){
+        if(!points || !points.size) return;
+        var data=dates.map(function(date){return points.get(date)||null});
+        if(!data.some(function(value){return value!=null})) return;
+        result.push({
+          name:name,type:'line',color:color,symbol:'none',showSymbol:false,connectNulls:true,
+          lineStyle:Object.assign({width:2},options && options.lineStyle || {}),data:data
+        });
+      });
+      return result;
+    }
+    function canonicalResetIndices(groups,dates){
+      var index=new Map(dates.map(function(date,position){return [date,position]}));
+      return groups.map(function(group){return index.get(group.startDate)}).filter(function(value){return value!=null && value>0});
+    }
+    function dailyWindowTooltip(order,formatters){
+      return {
+        trigger:'axis',axisPointer:{type:'cross',lineStyle:{color:'#b9c6bb',type:'dashed'}},
+        backgroundColor:'#1f2822',borderColor:'#1f2822',textStyle:{color:'#edf5ee',fontSize:11},extraCssText:'box-shadow:0 6px 20px #00000030;border-radius:8px',
+        formatter:function(params){
+          var list=Array.isArray(params)?params:[params],date=list.length?list[0].axisValue:'',rows=[];
+          order.forEach(function(name){
+            list.filter(function(item){return item && item.seriesName===name && item.data!=null}).forEach(function(item){
+              var raw=item.data,value=raw && typeof raw==='object' && raw.value!=null ? raw.value : item.value;
+              if(value==null) return;
+              var role=raw && raw.boundaryRole,label=name;
+              if(role==='end') label+='（上一窗口终点）';
+              if(role==='start') label+='（新窗口起点）';
+              rows.push('<div>'+esc(label)+'：'+esc(formatters[name](value))+'</div>');
+            });
+          });
+          return rows.length?'<div style="font-weight:700;margin-bottom:3px">'+esc(date)+'</div>'+rows.join(''):'';
+        }
+      };
+    }
+    function dailyWindowModel(days){
+      var groups=canonicalDailyWindows(days),dates=days.map(function(day){return day.date}),capacityFallback=confirmedCapacity(),dayByDate=new Map(days.map(function(day){return [day.date,day]}));
+      groups.forEach(function(group){
+        group.tokenPoints=cumulativeMinutePoints(group,days,'token');
+        group.apiPoints=cumulativeMinutePoints(group,days,'api');
+        group.creditPoints=cumulativeMinutePoints(group,days,'credit');
+        group.accountPoints=cumulativeAccountPoints(group,days);
+        group.officialUsedPoints=officialWindowPoints(group,days);
+        group.officialRemainingPoints=mapPointValues(group.officialUsedPoints,function(value){return 100-value});
+        var capacity=dayCapacity(dayByDate.get(group.startDate)) || capacityFallback;
+        group.localPercentPoints=capacity!=null && capacity>0 ? mapPointValues(group.creditPoints,function(value){return value/capacity*100}) : null;
+      });
+      return {groups:groups,dates:dates,breaks:canonicalResetIndices(groups,dates)};
     }
     function accountTokenForWindow(win){
       var startKey=win && win.start_at_ms?dateKey(new Date(Number(win.start_at_ms))):null;
@@ -708,60 +915,56 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       return (report.days||[]).find(function(item){return item.date===selectedDate}) || (report.selected_day && report.selected_day.date ? (report.days||[]).find(function(item){return item.date===report.selected_day.date}) : null) || sortedDays().slice(-1)[0] || {};
     }
     function dayTrendOption(){
-      if(dayMetric==='official') return dailyWindowPercentOption();
       var days=sortedDays();
       if(!days.length) return null;
-      var labels=days.map(function(day){return dateLabel(day.date)}),dates=days.map(function(day){return day.date}),breaks=resetIndices(days),series,formats,yFormatter,legendData,mark=resetMarkLine(labels,breaks);
+      if(dayMetric==='official') return dailyWindowPercentOption(days);
+      var labels=days.map(function(day){return dateLabel(day.date)}),dates=days.map(function(day){return day.date}),model=dailyWindowModel(days),series,lines,yFormatter,order,formatters,mark=resetMarkLine(labels,model.breaks);
       if(dayMetric==='token'){
         var localDaily=days.map(function(day){return day.usage && day.usage.total}),accountDaily=days.map(accountTokenForDay);
         series=[
           {name:'本机 Token（当日）',type:'bar',color:'#4ade80',data:seriesData(localDaily,dates),barMaxWidth:14},
-          {name:'账号 Token（当日）',type:'bar',color:'#fbbf24',data:seriesData(accountDaily,dates),barMaxWidth:14},
-          {name:'本机 Token（累计）',type:'line',color:'#16a34a',symbol:'none',lineStyle:{width:2},data:seriesData(cumulativeByReset(days,localDaily),dates,breaks),markLine:mark},
-          {name:'账号 Token（累计）',type:'line',color:'#2563eb',symbol:'none',lineStyle:{width:2},data:seriesData(cumulativeByReset(days,accountDaily),dates,breaks)}
+          {name:'账号 Token（当日）',type:'bar',color:'#fbbf24',data:seriesData(accountDaily,dates),barMaxWidth:14}
         ];
-        formats=[tokens,tokens,tokens,tokens];
+        lines=windowLineSeries('本机 Token（累计）','#16a34a',model.groups.map(function(group){return group.tokenPoints}),dates)
+          .concat(windowLineSeries('账号 Token（累计）','#2563eb',model.groups.map(function(group){return group.accountPoints}),dates));
+        order=['本机 Token（当日）','账号 Token（当日）','本机 Token（累计）','账号 Token（累计）'];
+        formatters={'本机 Token（当日）':tokens,'账号 Token（当日）':tokens,'本机 Token（累计）':tokens,'账号 Token（累计）':tokens};
         yFormatter=function(value){return compactNumber(value)};
       }else if(dayMetric==='api'){
         var apiDaily=days.map(function(day){return day.api_usd});
-        series=[
-          {name:'API 美元（当日）',type:'bar',color:'#4ade80',data:seriesData(apiDaily,dates),barMaxWidth:14},
-          {name:'API 美元（累计）',type:'line',color:'#16a34a',symbol:'none',lineStyle:{width:2},data:seriesData(cumulativeByReset(days,apiDaily),dates,breaks),markLine:mark}
-        ];
-        formats=[money,money];
+        series=[{name:'API 美元（当日）',type:'bar',color:'#4ade80',data:seriesData(apiDaily,dates),barMaxWidth:14}];
+        lines=windowLineSeries('API 美元（累计）','#16a34a',model.groups.map(function(group){return group.apiPoints}),dates);
+        order=['API 美元（当日）','API 美元（累计）'];
+        formatters={'API 美元（当日）':money,'API 美元（累计）':money};
         yFormatter=function(value){return '$'+compactNumber(value)};
       }else{
         var creditDaily=days.map(function(day){return day.credit});
-        series=[
-          {name:'Credit（当日）',type:'bar',color:'#4ade80',data:seriesData(creditDaily,dates),barMaxWidth:14},
-          {name:'Credit（累计）',type:'line',color:'#16a34a',symbol:'none',lineStyle:{width:2},data:seriesData(cumulativeByReset(days,creditDaily),dates,breaks),markLine:mark}
-        ];
-        formats=[creditText,creditText];
+        series=[{name:'Credit（当日）',type:'bar',color:'#4ade80',data:seriesData(creditDaily,dates),barMaxWidth:14}];
+        lines=windowLineSeries('Credit（累计）','#16a34a',model.groups.map(function(group){return group.creditPoints}),dates);
+        order=['Credit（当日）','Credit（累计）'];
+        formatters={'Credit（当日）':creditText,'Credit（累计）':creditText};
         yFormatter=function(value){return compactNumber(value)};
       }
-      legendData=series.map(function(series){return series.name});
-      return baseOption(labels,series,{formats:formats,yFormatter:yFormatter,legendData:legendData,left:60});
+      if(lines.length) lines[0].markLine=mark;
+      series=series.concat(lines);
+      return baseOption(labels,series,{tooltip:dailyWindowTooltip(order,formatters),yFormatter:yFormatter,legendData:order,left:60});
     }
-    function dailyWindowPercentOption(){
-      var days=sortedDays();
+    function dailyWindowPercentOption(days){
+      days=days || sortedDays();
       if(!days.length) return null;
       var labels=days.map(function(day){return dateLabel(day.date)}),dates=days.map(function(day){return day.date});
-      var officialDaily=days.map(officialDailyPercent),localDaily=days.map(localDailyPercent);
-      var remaining=days.map(function(day){var direct=firstNumber(day,['official_remaining_percent','account_remaining_percent']);return direct!=null?direct:(number(day.official_percent_end)!=null?100-number(day.official_percent_end):null)});
-      var officialCum=cumulativeByReset(days,officialDaily),localCum=cumulativeByReset(days,localDaily);
-      var breaks=resetIndices(days);
-      var valid=officialDaily.concat(localDaily,remaining,officialCum,localCum).some(function(value){return number(value)!=null});
-      if(!valid) return null;
-      var mark=resetMarkLine(labels,breaks);
+      var officialDaily=days.map(officialDailyPercent),localDaily=days.map(localDailyPercent),model=dailyWindowModel(days),mark=resetMarkLine(labels,model.breaks);
       var series=[
         {name:'当天本机使用',type:'bar',color:'#4ade80',data:seriesData(localDaily,dates),barMaxWidth:14},
         {name:'当天账号使用',type:'bar',color:'#fbbf24',data:seriesData(officialDaily,dates),barMaxWidth:14}
-      ].concat(
-        segmentedLineSeries('官方剩余',remaining,dates,breaks,{color:'#16a34a',symbol:'none',lineStyle:{width:2},markLine:mark}),
-        segmentedLineSeries('官方累计已用',officialCum,dates,breaks,{color:'#2563eb',symbol:'none',lineStyle:{width:2}}),
-        segmentedLineSeries('本机累计周占比',localCum,dates,breaks,{color:'#f59e0b',symbol:'none',lineStyle:{width:2,type:'dashed'}})
-      );
-      return baseOption(labels,series,{formats:series.map(function(){return percent}),yFormatter:function(value){return value+'%'},max:100,left:60,legendData:['当天本机使用','当天账号使用','官方剩余','官方累计已用','本机累计周占比']});
+      ],lines=windowLineSeries('官方剩余','#16a34a',model.groups.map(function(group){return group.officialRemainingPoints}),dates)
+        .concat(windowLineSeries('官方累计已用','#2563eb',model.groups.map(function(group){return group.officialUsedPoints}),dates))
+        .concat(windowLineSeries('本机累计周占比','#f59e0b',model.groups.map(function(group){return group.localPercentPoints}),dates,{lineStyle:{type:'dashed'}}));
+      if(lines.length) lines[0].markLine=mark;
+      series=series.concat(lines);
+      var order=['当天本机使用','当天账号使用','官方剩余','官方累计已用','本机累计周占比'],formatters={};
+      order.forEach(function(name){formatters[name]=percent});
+      return baseOption(labels,series,{tooltip:dailyWindowTooltip(order,formatters),yFormatter:function(value){return value+'%'},max:100,left:60,legendData:order});
     }
     function minuteTrendOption(metric,day,rows,win){
       if(!rows || !rows.length) return null;

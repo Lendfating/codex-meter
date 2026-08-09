@@ -124,14 +124,14 @@ struct Metric {
 }
 
 impl Metric {
-    fn add(&mut self, tokens: &TokenCounts, price: &pricing::Price) {
-        self.has_usage = true;
-        self.tokens.add_assign(tokens);
-        if let Some(value) = price.credit_micros {
-            self.credit_known = true;
-            self.credit_micros = self.credit_micros.saturating_add(value);
-        } else {
-            self.credit_partial = true;
+    fn add_priced(&mut self, price: &pricing::Price, include_credit: bool) {
+        if include_credit {
+            if let Some(value) = price.credit_micros {
+                self.credit_known = true;
+                self.credit_micros = self.credit_micros.saturating_add(value);
+            } else {
+                self.credit_partial = true;
+            }
         }
         if let Some(value) = price.api_usd_micros {
             self.api_known = true;
@@ -140,6 +140,25 @@ impl Metric {
             self.api_partial = true;
         }
         self.quality.extend(price.quality.iter().cloned());
+    }
+
+    #[cfg(test)]
+    fn add(&mut self, tokens: &TokenCounts, price: &pricing::Price) {
+        self.has_usage = true;
+        self.tokens.add_assign(tokens);
+        self.add_priced(price, true);
+    }
+
+    fn add_usage(&mut self, usage: &UsageRecord, price: &pricing::Price) {
+        self.has_usage = true;
+        self.tokens.add_assign(&usage.tokens);
+        let context = usage_context(usage);
+        self.add_priced(price, context == UsageContext::Subscription);
+        if context == UsageContext::Unknown {
+            self.credit_partial = true;
+            self.quality
+                .insert("account_context_unavailable".to_owned());
+        }
     }
     fn credit(&self) -> Option<f64> {
         (self.has_usage && self.credit_known).then(|| self.credit_micros as f64 / 1_000_000.0)
@@ -151,6 +170,44 @@ impl Metric {
     fn quality_flags(&self) -> Option<&'static str> {
         (self.credit_partial || self.api_partial).then_some("pricing_partial")
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UsageContext {
+    Subscription,
+    Api,
+    Unknown,
+}
+
+/// Historical JSONL context must not inherit the current App Server plan.
+/// The established rule for `provider=pro` with no plan identifies the old
+/// API-login records.
+fn effective_plan_type(usage: &UsageRecord) -> Option<String> {
+    usage.plan_type.clone().or_else(|| {
+        usage
+            .provider
+            .as_deref()
+            .is_some_and(|provider| provider.eq_ignore_ascii_case("pro"))
+            .then(|| "api".to_owned())
+    })
+}
+
+fn usage_context(usage: &UsageRecord) -> UsageContext {
+    match effective_plan_type(usage).as_deref() {
+        Some(plan) if plan.eq_ignore_ascii_case("api") => UsageContext::Api,
+        Some(_) => UsageContext::Subscription,
+        None => UsageContext::Unknown,
+    }
+}
+
+fn is_api_plan(plan: Option<&str>) -> bool {
+    plan.is_some_and(|value| value.eq_ignore_ascii_case("api"))
+}
+
+fn is_subscription_plan(plan: Option<&str>) -> bool {
+    plan.is_some_and(|value| {
+        !value.eq_ignore_ascii_case("api") && !value.eq_ignore_ascii_case("unknown")
+    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -385,18 +442,16 @@ pub async fn refresh_rollups(database: &Database) -> Result<MaterializeSummary, 
             .account_key
             .clone()
             .or_else(|| account.account_key.clone());
-        bucket.plan_type = bucket
-            .plan_type
-            .clone()
-            .or_else(|| usage.plan_type.clone())
-            .or_else(|| account.plan_type.clone());
-        if bucket.plan_type.as_deref().is_some_and(|plan| {
-            usage
+        let usage_plan = effective_plan_type(&usage);
+        if let Some(plan) = usage_plan.clone() {
+            if bucket
                 .plan_type
                 .as_deref()
                 .is_some_and(|value| value != plan)
-        }) {
-            bucket.quality.insert("mixed_plan".to_owned());
+            {
+                bucket.quality.insert("mixed_plan".to_owned());
+            }
+            bucket.plan_type = Some(plan);
         }
         bucket.provider = bucket
             .provider
@@ -409,19 +464,19 @@ pub async fn refresh_rollups(database: &Database) -> Result<MaterializeSummary, 
             usage.tier.as_deref(),
             usage.observed_at_ms,
         );
-        bucket.metric.add(&usage.tokens, &price);
+        bucket.metric.add_usage(&usage, &price);
         let date = bucket.local_date.clone();
         let day = days.entry(date.clone()).or_insert_with(|| DayAggregate {
             local_date: date.clone(),
             ..Default::default()
         });
-        day.metric.add(&usage.tokens, &price);
+        day.metric.add_usage(&usage, &price);
         day.quality.extend(price.quality.iter().cloned());
         add_plan_metric(&mut day.plans, &usage, &price, &account, &capacities);
 
         if let Some(window_id) = window_id.as_ref() {
             if let Some(window) = window_aggregates.get_mut(window_id) {
-                window.metric.add(&usage.tokens, &price);
+                window.metric.add_usage(&usage, &price);
                 add_plan_metric(&mut window.plans, &usage, &price, &account, &capacities);
                 window.quality.extend(price.quality.iter().cloned());
             }
@@ -508,11 +563,7 @@ pub async fn refresh_rollups(database: &Database) -> Result<MaterializeSummary, 
             ended_at_ms: row_ended_at_ms,
             window_id: window_id.clone(),
             account_key: bucket.account_key.clone(),
-            plan_type: usage
-                .plan_type
-                .clone()
-                .or_else(|| bucket.plan_type.clone())
-                .or_else(|| account.plan_type.clone()),
+            plan_type: usage_plan.clone(),
             provider: bucket.provider.clone(),
             observed_start_ms: Some(usage.observed_at_ms),
             observed_end_ms: Some(usage.observed_at_ms),
@@ -524,7 +575,7 @@ pub async fn refresh_rollups(database: &Database) -> Result<MaterializeSummary, 
         if crosses_boundary {
             session.quality.insert("split_boundary".to_owned());
         }
-        session.metric.add(&usage.tokens, &price);
+        session.metric.add_usage(&usage, &price);
         session.quality.extend(price.quality.iter().cloned());
         if let Some(model) = usage.model.clone() {
             let tier = usage.tier.clone().unwrap_or_else(|| "unknown".to_owned());
@@ -537,7 +588,7 @@ pub async fn refresh_rollups(database: &Database) -> Result<MaterializeSummary, 
                 .models
                 .entry((model, tier, effort))
                 .or_default()
-                .add(&usage.tokens, &price);
+                .add_usage(&usage, &price);
         } else {
             session.quality.insert("missing_model".to_owned());
         }
@@ -558,6 +609,7 @@ pub async fn refresh_rollups(database: &Database) -> Result<MaterializeSummary, 
         if day.metric.credit().is_none() && day.metric.has_usage {
             day.quality.insert("missing_pricing".to_owned());
         }
+        day.quality.extend(day.metric.quality.iter().cloned());
     }
     let daily_rows = days
         .values()
@@ -628,9 +680,7 @@ fn empty_minute(
         account_key: segment
             .and_then(|value| value.account_key.clone())
             .or_else(|| account.account_key.clone()),
-        plan_type: segment
-            .and_then(|value| value.plan_type.clone())
-            .or_else(|| account.plan_type.clone()),
+        plan_type: segment.and_then(|value| value.plan_type.clone()),
         provider: account.provider.clone(),
         ..Default::default()
     }
@@ -946,15 +996,68 @@ async fn load_capacities(database: &Database) -> Result<Vec<Capacity>, Materiali
         .collect::<Result<_, sqlx::Error>>()?)
 }
 
+fn quota_group_key(account_key: Option<&str>, limit_id: Option<&str>, window_kind: &str) -> String {
+    format!(
+        "{}:{}:{}",
+        account_key.unwrap_or("unknown"),
+        limit_id.unwrap_or("unknown"),
+        window_kind
+    )
+}
+
+fn merged_reset_at(previous: Option<i64>, incoming: Option<i64>) -> Option<i64> {
+    match (previous, incoming) {
+        (Some(old), Some(new)) => Some(old.max(new)),
+        (Some(old), None) => Some(old),
+        (None, Some(new)) => Some(new),
+        (None, None) => None,
+    }
+}
+
+fn valid_reset_transition(
+    previous_percent: Option<f64>,
+    previous_reset: Option<i64>,
+    quota: &QuotaObservation,
+) -> bool {
+    let percent_reset = previous_percent
+        .zip(quota.used_percent)
+        .is_some_and(|(old, new)| new + RESET_DROP_PERCENT < old);
+    previous_reset
+        .zip(quota.resets_at_ms)
+        .is_some_and(|(old, new)| percent_reset && new.saturating_sub(old) > RESET_TIME_JITTER_MS)
+}
+
+fn enforce_disjoint_windows(mut windows: Vec<WindowSegment>) -> Vec<WindowSegment> {
+    windows.sort_by_key(|window| window.start_at_ms);
+    let mut previous_by_group = BTreeMap::<String, usize>::new();
+    for index in 0..windows.len() {
+        let group = quota_group_key(
+            windows[index].account_key.as_deref(),
+            windows[index].limit_id.as_deref(),
+            &windows[index].window_kind,
+        );
+        if let Some(previous_index) = previous_by_group.get(&group).copied() {
+            let current_start = windows[index].start_at_ms;
+            if windows[previous_index]
+                .reset_at_ms
+                .is_some_and(|reset| reset > current_start)
+            {
+                windows[previous_index].reset_at_ms = Some(current_start);
+            }
+        }
+        previous_by_group.insert(group, index);
+    }
+    windows
+}
+
 fn build_windows(quotas: &[QuotaObservation]) -> Vec<WindowSegment> {
     let mut groups: BTreeMap<String, Vec<&QuotaObservation>> = BTreeMap::new();
     for quota in quotas {
         groups
-            .entry(format!(
-                "{}:{}:{}",
-                quota.account_key.as_deref().unwrap_or("unknown"),
-                quota.limit_id.as_deref().unwrap_or("unknown"),
-                quota.window_kind
+            .entry(quota_group_key(
+                quota.account_key.as_deref(),
+                quota.limit_id.as_deref(),
+                &quota.window_kind,
             ))
             .or_default()
             .push(quota);
@@ -968,22 +1071,21 @@ fn build_windows(quotas: &[QuotaObservation]) -> Vec<WindowSegment> {
                 value.priority,
             )
         });
-        let mut current = None;
+        let mut current: Option<WindowSegment> = None;
         let mut previous_percent = None;
         let mut previous_reset: Option<i64> = None;
         let mut ordinal = 0;
         for quota in values {
-            let percent_reset = previous_percent
-                .zip(quota.used_percent)
-                .is_some_and(|(old, new)| new + RESET_DROP_PERCENT < old);
-            let explicit_reset =
-                previous_reset
-                    .zip(quota.resets_at_ms)
-                    .is_some_and(|(old, new)| {
-                        (new - old).abs() > RESET_TIME_JITTER_MS && (percent_reset || new < old)
-                    });
-            if current.is_none() || percent_reset || explicit_reset {
-                if let Some(value) = current.take() {
+            let starts_new = current.is_none()
+                || valid_reset_transition(previous_percent, previous_reset, quota);
+            if starts_new {
+                if let Some(mut value) = current.take() {
+                    if value.start_at_ms < quota.first_seen_at_ms {
+                        // A newly observed reset is the exclusive end of the
+                        // previous interval.  Do not leave the old projected
+                        // reset timestamp overlapping the new interval.
+                        value.reset_at_ms = Some(quota.first_seen_at_ms);
+                    }
                     windows.push(value);
                 }
                 current = Some(WindowSegment {
@@ -1003,19 +1105,27 @@ fn build_windows(quotas: &[QuotaObservation]) -> Vec<WindowSegment> {
                     .account_key
                     .clone()
                     .or_else(|| quota.account_key.clone());
-                value.reset_at_ms = quota.resets_at_ms.or(value.reset_at_ms);
+                value.reset_at_ms = merged_reset_at(value.reset_at_ms, quota.resets_at_ms);
                 value.window_minutes = quota.window_minutes.or(value.window_minutes);
                 value.plan_type = value.plan_type.clone().or_else(|| quota.plan_type.clone());
             }
-            previous_percent = quota.used_percent.or(previous_percent);
-            previous_reset = quota.resets_at_ms.or(previous_reset);
+            previous_percent = if starts_new {
+                quota.used_percent
+            } else {
+                match (previous_percent, quota.used_percent) {
+                    (Some(old), Some(new)) => Some(old.max(new)),
+                    (Some(old), None) => Some(old),
+                    (None, Some(new)) => Some(new),
+                    (None, None) => None,
+                }
+            };
+            previous_reset = merged_reset_at(previous_reset, quota.resets_at_ms);
         }
         if let Some(value) = current {
             windows.push(value);
         }
     }
-    windows.sort_by_key(|window| window.start_at_ms);
-    windows
+    enforce_disjoint_windows(windows)
 }
 
 fn find_quota_window<'a>(
@@ -1083,6 +1193,10 @@ fn capacity_for<'a>(
     plan: Option<&str>,
     at_ms: i64,
 ) -> Option<&'a Capacity> {
+    if !is_subscription_plan(plan) {
+        return None;
+    }
+    let preferred_profile = default_capacity_profile(plan);
     capacities
         .iter()
         .filter(|capacity| capacity.from <= at_ms && capacity.to.is_none_or(|to| at_ms < to))
@@ -1098,7 +1212,26 @@ fn capacity_for<'a>(
                 .as_deref()
                 .is_none_or(|value| Some(value) == plan)
         })
-        .max_by_key(|capacity| capacity.from)
+        .max_by_key(|capacity| {
+            let exact_plan = capacity.plan_type.as_deref().is_some_and(|value| {
+                plan.is_some_and(|candidate| value.eq_ignore_ascii_case(candidate))
+            });
+            let profile_match = preferred_profile
+                .is_some_and(|profile| capacity.profile.eq_ignore_ascii_case(profile));
+            (
+                u8::from(exact_plan) * 2 + u8::from(profile_match),
+                capacity.from,
+            )
+        })
+}
+
+fn default_capacity_profile(plan: Option<&str>) -> Option<&'static str> {
+    match plan.map(str::to_ascii_lowercase).as_deref() {
+        Some("plus") => Some("usd20"),
+        Some("team") => Some("usd100"),
+        Some("pro") => Some("usd200"),
+        _ => None,
+    }
 }
 
 fn plan_key(plan_type: Option<&str>, capacity_profile: Option<&str>) -> String {
@@ -1116,10 +1249,7 @@ fn add_plan_metric(
     account: &AccountContext,
     capacities: &[Capacity],
 ) {
-    let plan_type = usage
-        .plan_type
-        .clone()
-        .or_else(|| account.plan_type.clone());
+    let plan_type = effective_plan_type(usage);
     let capacity = capacity_for(
         capacities,
         account.account_key.as_deref(),
@@ -1131,7 +1261,7 @@ fn add_plan_metric(
     let entry = plans.entry(key).or_default();
     entry.plan_type = entry.plan_type.clone().or(plan_type);
     entry.capacity_profile = entry.capacity_profile.clone().or(capacity_profile);
-    entry.metric.add(&usage.tokens, price);
+    entry.metric.add_usage(usage, price);
 }
 
 fn dominant_plan(plans: &BTreeMap<String, PlanAggregate>) -> Option<&PlanAggregate> {
@@ -1148,6 +1278,25 @@ fn dominant_plan(plans: &BTreeMap<String, PlanAggregate>) -> Option<&PlanAggrega
             .partial_cmp(&right_value)
             .unwrap_or(std::cmp::Ordering::Equal)
     })
+}
+
+fn dominant_subscription_plan(plans: &BTreeMap<String, PlanAggregate>) -> Option<&PlanAggregate> {
+    plans
+        .values()
+        .filter(|plan| is_subscription_plan(plan.plan_type.as_deref()))
+        .max_by(|left, right| {
+            let left_value = left
+                .metric
+                .credit()
+                .unwrap_or(left.metric.tokens.total as f64);
+            let right_value = right
+                .metric
+                .credit()
+                .unwrap_or(right.metric.tokens.total as f64);
+            left_value
+                .partial_cmp(&right_value)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
 }
 
 fn capacity_for_plan<'a>(
@@ -1211,17 +1360,27 @@ fn to_daily_row(
     capacities: &[Capacity],
 ) -> UsageDailyRecord {
     let dominant = dominant_plan(&day.plans);
-    let plan_type = dominant
-        .and_then(|plan| plan.plan_type.clone())
-        .or_else(|| account.plan_type.clone());
-    let capacity_profile = dominant.and_then(|plan| plan.capacity_profile.clone());
-    let capacity = capacity_for_plan(
-        capacities,
-        account.account_key.as_deref(),
-        plan_type.as_deref(),
-        capacity_profile.as_deref(),
-        day_start_ms(&day.local_date),
-    );
+    let dominant_subscription = dominant_subscription_plan(&day.plans);
+    let subscription_count = day
+        .plans
+        .values()
+        .filter(|plan| is_subscription_plan(plan.plan_type.as_deref()))
+        .count();
+    let local_plan = (subscription_count == 1)
+        .then_some(dominant_subscription)
+        .flatten();
+    let display_plan = dominant_subscription.or(dominant);
+    let plan_type = display_plan.and_then(|plan| plan.plan_type.clone());
+    let capacity_profile = local_plan.and_then(|plan| plan.capacity_profile.clone());
+    let capacity = local_plan.and_then(|plan| {
+        capacity_for_plan(
+            capacities,
+            account.account_key.as_deref(),
+            plan.plan_type.as_deref(),
+            capacity_profile.as_deref(),
+            day_start_ms(&day.local_date),
+        )
+    });
     let account_tokens = account.daily_tokens.get(&day.local_date).copied();
     let local_total = day.metric.has_usage.then_some(day.metric.tokens.total);
     let unobserved = account_tokens
@@ -1230,9 +1389,8 @@ fn to_daily_row(
     let coverage = account_tokens
         .zip(local_total)
         .and_then(|(remote, local)| (remote > 0).then(|| local as f64 / remote as f64));
-    let local_percent = day
-        .metric
-        .credit()
+    let local_percent = local_plan
+        .and_then(|plan| plan.metric.credit())
         .zip(capacity)
         .filter(|(_, capacity)| capacity.credit > 0.0)
         .map(|(credit, capacity)| credit / capacity.credit * 100.0);
@@ -1246,6 +1404,18 @@ fn to_daily_row(
     if day.plans.len() > 1 {
         quality.insert("mixed_plan".to_owned());
     }
+    let has_api = day
+        .plans
+        .values()
+        .any(|plan| is_api_plan(plan.plan_type.as_deref()));
+    let has_subscription = day
+        .plans
+        .values()
+        .any(|plan| is_subscription_plan(plan.plan_type.as_deref()));
+    if has_api && has_subscription {
+        quality.insert("mixed_account".to_owned());
+    }
+    quality.extend(day.metric.quality.iter().cloned());
     UsageDailyRecord {
         local_date: day.local_date.clone(),
         account_key: account.account_key.clone(),
@@ -1297,7 +1467,7 @@ fn to_minute_row(
             .account_key
             .as_deref()
             .or(account.account_key.as_deref()),
-        bucket.plan_type.as_deref().or(account.plan_type.as_deref()),
+        bucket.plan_type.as_deref(),
         bucket.minute_start_ms,
     );
     UsageMinuteRecord {
@@ -1313,10 +1483,7 @@ fn to_minute_row(
             .clone()
             .or_else(|| account.account_key.clone()),
         auth_kind: account.auth_kind.clone(),
-        plan_type: bucket
-            .plan_type
-            .clone()
-            .or_else(|| account.plan_type.clone()),
+        plan_type: bucket.plan_type.clone(),
         provider: bucket.provider.clone().or_else(|| account.provider.clone()),
         capacity_profile: capacity.map(|value| value.profile.clone()),
         window_id: bucket.window_id.clone(),
@@ -1365,36 +1532,31 @@ fn to_window_row(
     capacities: &[Capacity],
 ) -> UsageWindowRecord {
     let dominant = dominant_plan(&window.plans);
-    let plan_type = dominant
-        .and_then(|plan| plan.plan_type.clone())
-        .or_else(|| window.segment.plan_type.clone())
-        .or_else(|| account.plan_type.clone());
-    let capacity_profile = dominant
-        .and_then(|plan| plan.capacity_profile.clone())
-        .or_else(|| {
-            capacity_for(
-                capacities,
-                window
-                    .segment
-                    .account_key
-                    .as_deref()
-                    .or(account.account_key.as_deref()),
-                plan_type.as_deref(),
-                window.segment.start_at_ms,
-            )
-            .map(|value| value.profile.clone())
-        });
-    let capacity = capacity_for_plan(
-        capacities,
-        window
-            .segment
-            .account_key
-            .as_deref()
-            .or(account.account_key.as_deref()),
-        plan_type.as_deref(),
-        capacity_profile.as_deref(),
-        window.segment.start_at_ms,
-    );
+    let dominant_subscription = dominant_subscription_plan(&window.plans);
+    let subscription_count = window
+        .plans
+        .values()
+        .filter(|plan| is_subscription_plan(plan.plan_type.as_deref()))
+        .count();
+    let local_plan = (subscription_count == 1)
+        .then_some(dominant_subscription)
+        .flatten();
+    let display_plan = dominant_subscription.or(dominant);
+    let plan_type = display_plan.and_then(|plan| plan.plan_type.clone());
+    let capacity_profile = local_plan.and_then(|plan| plan.capacity_profile.clone());
+    let capacity = local_plan.and_then(|plan| {
+        capacity_for_plan(
+            capacities,
+            window
+                .segment
+                .account_key
+                .as_deref()
+                .or(account.account_key.as_deref()),
+            plan.plan_type.as_deref(),
+            capacity_profile.as_deref(),
+            window.segment.start_at_ms,
+        )
+    });
     let account_tokens = account_tokens_between(
         account,
         Some(window.segment.start_at_ms),
@@ -1410,15 +1572,25 @@ fn to_window_row(
     let coverage = account_tokens
         .zip(local_total)
         .and_then(|(remote, local)| (remote > 0).then(|| local as f64 / remote as f64));
-    let local_percent = window
-        .metric
-        .credit()
+    let local_percent = local_plan
+        .and_then(|plan| plan.metric.credit())
         .zip(capacity)
         .filter(|(_, capacity)| capacity.credit > 0.0)
         .map(|(credit, capacity)| credit / capacity.credit * 100.0);
     let mut quality = window.quality.clone();
     if window.plans.len() > 1 {
         quality.insert("mixed_plan".to_owned());
+    }
+    let has_api = window
+        .plans
+        .values()
+        .any(|plan| is_api_plan(plan.plan_type.as_deref()));
+    let has_subscription = window
+        .plans
+        .values()
+        .any(|plan| is_subscription_plan(plan.plan_type.as_deref()));
+    if has_api && has_subscription {
+        quality.insert("mixed_account".to_owned());
     }
     if account_tokens.is_none() {
         quality.insert("account_tokens_unavailable".to_owned());
@@ -1504,10 +1676,7 @@ fn to_session_row(
             .account_key
             .as_deref()
             .or(account.account_key.as_deref()),
-        session
-            .plan_type
-            .as_deref()
-            .or(account.plan_type.as_deref()),
+        session.plan_type.as_deref(),
         session.started_at_ms.unwrap_or_default(),
     );
     let model_breakdown_json = (!session.models.is_empty()).then(|| {
@@ -1556,10 +1725,7 @@ fn to_session_row(
             .clone()
             .or_else(|| account.account_key.clone()),
         auth_kind: account.auth_kind.clone(),
-        plan_type: session
-            .plan_type
-            .clone()
-            .or_else(|| account.plan_type.clone()),
+        plan_type: session.plan_type.clone(),
         provider: session
             .provider
             .clone()
@@ -1707,6 +1873,60 @@ mod tests {
         assert_eq!(dedupe_usages(vec![first, second]).len(), 2);
     }
 
+    #[test]
+    fn historical_api_usage_does_not_consume_subscription_credit() {
+        let mut api = usage_record("api", 100, Some("main"));
+        api.provider = Some("pro".to_owned());
+        assert_eq!(effective_plan_type(&api).as_deref(), Some("api"));
+        assert_eq!(usage_context(&api), UsageContext::Api);
+
+        let price = pricing::Price {
+            credit_micros: Some(1_000_000),
+            api_usd_micros: Some(100_000),
+            quality: Vec::new(),
+        };
+        let mut metric = Metric::default();
+        metric.add_usage(&api, &price);
+        assert_eq!(metric.credit(), None);
+        assert_eq!(metric.api_usd(), Some(0.1));
+
+        let mut plus = usage_record("plus", 200, Some("main"));
+        plus.plan_type = Some("plus".to_owned());
+        metric.add_usage(&plus, &price);
+        assert_eq!(metric.credit(), Some(1.0));
+    }
+
+    #[test]
+    fn default_capacity_profile_follows_the_historical_plan() {
+        let capacities = [
+            Capacity {
+                profile: "usd20".to_owned(),
+                credit: 3_200.0,
+                account_key: None,
+                plan_type: None,
+                from: 0,
+                to: None,
+            },
+            Capacity {
+                profile: "usd200".to_owned(),
+                credit: 64_000.0,
+                account_key: None,
+                plan_type: None,
+                from: 0,
+                to: None,
+            },
+        ];
+        assert_eq!(
+            capacity_for(&capacities, None, Some("plus"), 1).map(|value| value.profile.as_str()),
+            Some("usd20")
+        );
+        assert_eq!(
+            capacity_for(&capacities, None, Some("pro"), 1).map(|value| value.profile.as_str()),
+            Some("usd200")
+        );
+        assert!(capacity_for(&capacities, None, Some("api"), 1).is_none());
+    }
+
     #[tokio::test]
     async fn rebuilds_four_result_tables_from_source_rows() {
         let database = Database::connect_in_memory().await.unwrap();
@@ -1741,6 +1961,7 @@ mod tests {
                 kind: "usage".to_owned(),
                 observed_at_ms: 1785825720000,
                 model: Some("gpt-5.6-sol".to_owned()),
+                plan_type: Some("pro".to_owned()),
                 service_tier: None,
                 input_tokens: Some(10),
                 total_tokens: Some(10),
@@ -1963,7 +2184,32 @@ mod tests {
                 priority: 1,
             },
         ];
-        assert_eq!(build_windows(&values).len(), 2);
+        let windows = build_windows(&values);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].reset_at_ms, Some(1_120_000));
+    }
+
+    #[test]
+    fn same_reset_percent_drop_is_stale_not_a_new_window() {
+        let values = vec![(1_000_000, 80.0), (1_060_000, 20.0), (1_120_000, 30.0)]
+            .into_iter()
+            .map(|(first_seen_at_ms, used_percent)| QuotaObservation {
+                first_seen_at_ms,
+                last_seen_at_ms: first_seen_at_ms,
+                account_key: Some("account".to_owned()),
+                limit_id: Some("weekly".to_owned()),
+                window_kind: "primary".to_owned(),
+                used_percent: Some(used_percent),
+                window_minutes: Some(10_080),
+                resets_at_ms: Some(2_000_000),
+                plan_type: Some("pro".to_owned()),
+                source: "jsonl",
+                priority: 1,
+            })
+            .collect::<Vec<_>>();
+        let windows = build_windows(&values);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].reset_at_ms, Some(2_000_000));
     }
 
     #[test]

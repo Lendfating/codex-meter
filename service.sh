@@ -74,7 +74,7 @@ is_codex_meter_pid() {
   pid="$1"
   command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
   case "$command_line" in
-    *codex-meter*) return 0 ;;
+    *"$BIN"*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -112,6 +112,20 @@ wait_for_health() {
   attempts=0
   while [ "$attempts" -lt "$max_attempts" ]; do
     if is_healthy; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.5
+  done
+  return 1
+}
+
+wait_for_process() {
+  expected_pid="$1"
+  max_attempts=10
+  attempts=0
+  while [ "$attempts" -lt "$max_attempts" ]; do
+    if kill -0 "$expected_pid" 2>/dev/null && is_codex_meter_pid "$expected_pid"; then
       return 0
     fi
     attempts=$((attempts + 1))
@@ -201,6 +215,10 @@ start_service() {
     rm -f "$PID_FILE"
   fi
 
+  if is_healthy; then
+    die "port $PORT is already served by an untracked codex-meter process; stop it before starting"
+  fi
+
   ensure_binary
   printf 'codex-meter: starting on %s\n' "$BASE_URL"
   printf 'codex-meter: database %s\n' "$DB_PATH"
@@ -217,6 +235,14 @@ start_service() {
     nohup env "${start_env[@]}" "$BIN" >>"$LOG_FILE" 2>&1 < /dev/null &
     printf '%s\n' "$!" > "$PID_FILE"
   )
+
+  started_pid="$(read_pid 2>/dev/null || true)"
+  if [ -z "$started_pid" ] || ! wait_for_process "$started_pid"; then
+    printf 'codex-meter: newly started process did not stay alive; recent log:\n' >&2
+    tail -n 60 "$LOG_FILE" >&2 || true
+    stop_process || true
+    return 1
+  fi
 
   if ! wait_for_health; then
     printf 'codex-meter: failed to become healthy; recent log:\n' >&2
