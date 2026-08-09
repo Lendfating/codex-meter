@@ -1544,6 +1544,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn from_date_drops_old_records_from_recently_modified_file() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("codex-meter-record-range-{nonce}"));
+        let old_dir = root.join("sessions/2026/01");
+        fs::create_dir_all(&old_dir).unwrap();
+        let old_path = old_dir.join("rollout-old.jsonl");
+        let content = [
+            json!({
+                "timestamp":"2026-01-02T00:00:00Z",
+                "type":"session_meta",
+                "payload":{"id":"old"}
+            }),
+            json!({
+                "timestamp":"2026-01-02T00:01:00Z",
+                "type":"event_msg",
+                "payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}
+            }),
+        ]
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n";
+        fs::write(&old_path, content).unwrap();
+        std::fs::File::open(&old_path)
+            .unwrap()
+            .set_modified(
+                SystemTime::UNIX_EPOCH
+                    + std::time::Duration::from_secs(1_785_600_000),
+            )
+            .unwrap();
+
+        let database = Database::connect_in_memory().await.unwrap();
+        let collector = JsonlCollector::new(&root)
+            .with_cursor_path(Some(root.join("cursor.json")))
+            .with_from_date(Some(parse_date("2026-08-01").unwrap()));
+        let report = collector.scan_once(&database).await.unwrap();
+
+        assert_eq!(report.files_scanned, 1);
+        assert_eq!(report.recognized_events, 0);
+        assert_eq!(report.inserted_events, 0);
+        assert!(database.list_source_jsonl().await.unwrap().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn real_sample_smoke_when_requested() {
         let Some(sample) = std::env::var_os("CODEX_METER_REAL_SAMPLE_JSONL") else {
             return;
