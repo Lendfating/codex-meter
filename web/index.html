@@ -263,6 +263,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     @keyframes sync-pulse{0%,100%{transform:translateX(-80%);opacity:.45}50%{transform:translateX(120%);opacity:1}}
     .sync-percent{font-size:32px;font-weight:900;letter-spacing:-.04em}
     .sync-time{color:var(--muted);font-size:11px;margin-top:2px}
+    .sync-time small{display:block;font-size:9px;line-height:1.2;white-space:nowrap}
   </style>
 </head>
 <body>
@@ -288,6 +289,9 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     var capacityRangeReady = false;
     var capacityEstimateVisible = false;
     var priceTab = -1;
+    var autoUpdateTimer = null;
+    var autoUpdateInFlight = false;
+    var manualRefreshInFlight = false;
 
     function normalizeFast(value){
       if(Array.isArray(value)){
@@ -607,7 +611,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     function topbar(){
       var current=report && report.current || {}, account=current.account || {}, official=current.official || {};
       var capacity=confirmedCapacity();
-      return '<header class="topbar"><div class="topbar-left"><div class="page-brand"><div class="page-brand-mark">CM</div><strong class="page-brand-name">Codex Meter</strong></div><div class="page-heading"><h1>'+pageTitle()+'</h1><p>'+pageSubtitle()+'</p></div></div><div class="top-actions"><div class="account-badge"><strong>当前订阅：'+esc(planLabel(account.plan))+' <span class="pill '+(capacity==null?'warn':'')+'">'+(capacity==null?'周额度待确认':creditText(capacity)+' Credit')+'</span></strong></div><button class="refresh" id="refresh">刷新 JSONL + CCUsage</button><div class="sync-time">最近同步：'+syncTimeAgo(syncTime)+'</div></div></header>';
+      return '<header class="topbar"><div class="topbar-left"><div class="page-brand"><div class="page-brand-mark">CM</div><strong class="page-brand-name">Codex Meter</strong></div><div class="page-heading"><h1>'+pageTitle()+'</h1><p>'+pageSubtitle()+'</p></div></div><div class="top-actions"><div class="account-badge"><strong>当前订阅：'+esc(planLabel(account.plan))+' <span class="pill '+(capacity==null?'warn':'')+'">'+(capacity==null?'周额度待确认':creditText(capacity)+' Credit')+'</span></strong></div><button class="refresh" id="refresh">手动刷新</button><div class="sync-time">最近同步：'+syncTimeAgo(syncTime)+'<small>（每10分钟自动刷新）</small></div></div></header>';
     }
     function statCard(label,value,sub){
       return '<div class="stat-card"><strong>'+value+'</strong><span>'+esc(label)+'</span>'+(sub?'<small>'+sub+'</small>':'')+'</div>';
@@ -622,7 +626,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       var aggregate=windowAggregate(win),accountToken=accountTokenThroughYesterday(win),capacity=aggregate.capacity;
       var accountTokenValue=accountToken==null?'<span class="warn">待补数据</span>':tokens(accountToken);
       var creditSub=capacity==null?'周额度待确认':'周额度 '+creditText(capacity)+' Credit';
-      return '<section class="window-summary"><div class="panel window-main"><p class="eyebrow">当前窗口 / ACCOUNT WINDOW</p><div class="window-title"><h2>'+percent(official.used_percent)+' 已用</h2><span class="pill '+(official.remaining_percent==null?'warn':'')+'">剩余 '+percent(official.remaining_percent)+'</span></div><div class="window-range"><b>'+dateTime(start)+'</b>　→　<b>'+dateTime(reset)+'</b><span>　窗口起点 / 下次 Reset</span></div><div class="window-stats">'+statCard('账号 Token（窗口参考）',accountTokenValue,'从窗口起始日到昨天；首日可能多算，今天未结算')+statCard('本机 Token（窗口累计）',tokens(aggregate.token))+statCard('本机 API 美元（窗口累计）',money(aggregate.api))+statCard('本机 Credit（窗口累计）',creditValue(aggregate.credit),creditSub)+statCard('本机周占比',percentPrecise(aggregate.percent),'本机 Credit / 当前套餐周额度')+'</div></div><div class="panel window-side"><div><p class="eyebrow">官方窗口状态</p><strong>已过 '+elapsed+'，距下次 Reset '+remaining+'</strong><p>'+esc(official.source || 'none')+'；官方百分比历史优先来自 JSONL。</p></div><div><p>账号 Token 是日级参考；本机 Token、API 美元和 Credit 按 JSONL 主事实累计；缺失字段保持待补数据。</p></div></div></section>';
+      return '<section class="window-summary"><div class="panel window-main"><p class="eyebrow">当前窗口 / ACCOUNT WINDOW</p><div class="window-title"><h2>'+percent(official.used_percent)+' 已用</h2><span class="pill '+(official.remaining_percent==null?'warn':'')+'">剩余 '+percent(official.remaining_percent)+'</span></div><div class="window-range"><b>'+dateTime(start)+'</b>　→　<b>'+dateTime(reset)+'</b><span>　窗口起点 / 下次 Reset</span></div><div class="window-stats">'+statCard('账号 Token（窗口参考）',accountTokenValue,'从窗口起始日到昨天；首日可能多算，今天未结算')+statCard('本机 Token（窗口累计）',tokens(aggregate.token))+statCard('本机 API 美元（窗口累计）',money(aggregate.api))+statCard('本机 Credit（窗口累计）',creditValue(aggregate.credit),creditSub)+statCard('本机周占比',percentPrecise(aggregate.percent),'本机 Credit / 当前套餐周额度')+'</div></div><div class="panel window-side"><div><p class="eyebrow">官方窗口状态</p><strong>已过 '+elapsed+'，距下次 Reset '+remaining+'</strong><p>'+esc(official.source || 'none')+'；官方百分比历史优先来自 JSONL。</p></div><div><p>账号 Token 是日级参考；官方日期桶与本机按 UTC/北京时间切分可能不同，单日归属可能有轻微偏移；窗口/累计更可靠。本机 Token、API 美元和 Credit 按 JSONL 主事实累计；该偏移不改变本机 Credit、API 美元或本机百分比计算。</p></div></div></section>';
     }
     function scopeTabs(){
       return '<div class="scope-tabs"><button class="scope-tab '+(usageScope==='day'?'active':'')+'" data-scope="day">按日期</button><button class="scope-tab '+(usageScope==='window'?'active':'')+'" data-scope="window">按周窗口</button></div>';
@@ -1453,6 +1457,21 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
         throw error;
       }
     }
+    async function autoUpdate(){
+      if(autoUpdateInFlight || manualRefreshInFlight || document.hidden) return;
+      autoUpdateInFlight=true;
+      try{
+        await load(selectedDate);
+      }catch(error){
+        console.warn('自动拉取最新报告失败',error);
+      }finally{
+        autoUpdateInFlight=false;
+      }
+    }
+    function startAutoUpdate(){
+      if(autoUpdateTimer) return;
+      autoUpdateTimer=window.setInterval(autoUpdate,10*60*1000);
+    }
     async function saveCapacity(code){
       var input=document.getElementById('capacity-'+code),value=Number(input && input.value);
       var status=document.getElementById('capacity-status');
@@ -1489,6 +1508,8 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       document.querySelectorAll('[data-save-capacity]').forEach(function(element){element.addEventListener('click',function(){saveCapacity(element.dataset.saveCapacity)})});
       var refresh=document.getElementById('refresh');
       if(refresh) refresh.addEventListener('click',async function(){
+        if(manualRefreshInFlight) return;
+        manualRefreshInFlight=true;
         refresh.textContent='刷新中…';
         try{
           var response=await fetch('/api/refresh',{method:'POST',headers:{'Accept':'application/json'}});
@@ -1498,16 +1519,17 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
           await load(selectedDate);
           var result=document.getElementById('refresh');
           if(result){
-            result.textContent=validation.status==='ok'?'已刷新 JSONL + CCUsage':validation.status==='partial'?'CCUsage 部分成功':'CCUsage 刷新失败';
-            setTimeout(function(){var button=document.getElementById('refresh');if(button)button.textContent='刷新 JSONL + CCUsage'},3000);
+            result.textContent=payload.status==='ok' && validation.status==='ok'?'三源刷新完成':'三源刷新部分完成';
+            setTimeout(function(){var button=document.getElementById('refresh');if(button)button.textContent='手动刷新'},3000);
           }
         }catch(error){
           var failed=document.getElementById('refresh');
           if(failed) failed.textContent='刷新失败';
           throw error;
         }finally{
+          manualRefreshInFlight=false;
           var button=document.getElementById('refresh');
-          if(button && button.textContent==='刷新中…') button.textContent='刷新 JSONL + CCUsage';
+          if(button && button.textContent==='刷新中…') button.textContent='手动刷新';
         }
       });
     }
@@ -1592,7 +1614,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       document.getElementById('sync-overlay').style.display='none';
       app.innerHTML='<div class="error">读取失败：'+esc(error && error.message || error)+'<br><button class="refresh" onclick="location.reload()">重试</button></div>';
     }
-    waitForSync().then(function(){return load();}).catch(showError);
+    waitForSync().then(function(){return load();}).then(startAutoUpdate).catch(showError);
   })();
   </script>
 </body>

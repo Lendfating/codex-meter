@@ -18,6 +18,7 @@ use crate::{
     pipelines::{
         result::materialize::{refresh_rollups, MaterializeError},
         source::{
+            app_server::{poll_once, AppServerConfig},
             ccusage::{CcusageCollector, CcusageError},
             jsonl::{JsonlCollector, JsonlError},
         },
@@ -216,14 +217,32 @@ async fn report(
 }
 
 async fn refresh(State(state): State<AppState>) -> Result<Json<Value>, ServiceError> {
-    let scan = state.collector.scan_once(&state.database).await?;
-    let rollup = refresh_rollups(&state.database).await?;
-    let validation = match state.ccusage.run_once(&state.database).await {
+    let scan_result = state.collector.scan_once(&state.database).await;
+    let scan_ok = scan_result.is_ok();
+    let scan = match scan_result {
+        Ok(report) => serde_json::to_value(report).unwrap_or_else(|_| json!({"status":"ok"})),
+        Err(error) => json!({"status":"failed","error":error.to_string()}),
+    };
+    let app_server_result = poll_once(&state.database, &AppServerConfig::default(), true).await;
+    let app_server_ok = app_server_result.is_ok();
+    let app_server = match app_server_result {
+        Ok(report) => json!({"status":"ok","report":report}),
+        Err(error) => json!({"status":"failed","error":error.to_string()}),
+    };
+    let validation_result = state.ccusage.run_once(&state.database).await;
+    let validation = match validation_result {
         Ok(summary) => serde_json::to_value(summary).unwrap_or_else(|_| json!({"status":"ok"})),
         Err(error) => json!({"status":"failed","error":error.to_string()}),
     };
+    let validation_ok = validation["status"].as_str() == Some("ok");
+    let rollup = refresh_rollups(&state.database).await?;
+    let status = if scan_ok && app_server_ok && validation_ok {
+        "ok"
+    } else {
+        "partial"
+    };
     Ok(Json(
-        json!({"status":"ok","scan":scan,"rollup":rollup,"validation":validation,"report":build_report(&state.database,None).await?}),
+        json!({"status":status,"scan":scan,"app_server":app_server,"rollup":rollup,"validation":validation,"report":build_report(&state.database,None).await?}),
     ))
 }
 

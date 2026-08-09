@@ -561,29 +561,7 @@ fn current_json(
     let weekly_credit = window
         .and_then(|window| window.get("start_at_ms").and_then(Value::as_i64))
         .and_then(|start| {
-            capacities
-                .iter()
-                .filter(|row| {
-                    row.try_get::<i64, _>("effective_from_ms")
-                        .unwrap_or(i64::MAX)
-                        <= start
-                })
-                .filter(|row| {
-                    row.try_get::<Option<String>, _>("account_key")
-                        .ok()
-                        .flatten()
-                        .is_none_or(|key| Some(key) == account_key)
-                })
-                .filter(|row| {
-                    row.try_get::<Option<String>, _>("plan_type")
-                        .ok()
-                        .flatten()
-                        .is_none_or(|value| Some(value) == plan)
-                })
-                .max_by_key(|row| {
-                    row.try_get::<i64, _>("effective_from_ms")
-                        .unwrap_or_default()
-                })
+            select_current_capacity(capacities, account_key.as_deref(), plan.as_deref(), start)
         })
         .and_then(|row| row.try_get::<f64, _>("weekly_credit").ok());
     let window_value = window.cloned().unwrap_or_else(|| json!({"window_id":Value::Null,"start_at_ms":Value::Null,"reset_at_ms":reset,"local_tokens":Value::Null,"local_credit":Value::Null,"local_api_usd":Value::Null,"local_percent":Value::Null}));
@@ -635,6 +613,128 @@ fn current_json(
         "account_daily_tokens":account_daily_tokens,
         "quality_flags": if used.is_none(){json!(["official_unavailable"])} else if weekly_credit.is_none(){json!(["capacity_unconfirmed"])} else {json!([])}
     }))
+}
+
+fn select_current_capacity<'a>(
+    capacities: &'a [sqlx::sqlite::SqliteRow],
+    account_key: Option<&str>,
+    plan: Option<&str>,
+    at_ms: i64,
+) -> Option<&'a sqlx::sqlite::SqliteRow> {
+    let Some(preferred_profile) = default_capacity_profile(plan) else {
+        return None;
+    };
+
+    capacities
+        .iter()
+        .filter(|row| {
+            let from = row
+                .try_get::<i64, _>("effective_from_ms")
+                .unwrap_or(i64::MAX);
+            let to = row
+                .try_get::<Option<i64>, _>("effective_to_ms")
+                .ok()
+                .flatten();
+            from <= at_ms && to.is_none_or(|value| at_ms < value)
+        })
+        .filter(|row| {
+            row.try_get::<Option<String>, _>("account_key")
+                .ok()
+                .flatten()
+                .is_none_or(|key| account_key.is_some_and(|value| key == value))
+        })
+        .filter(|row| {
+            row.try_get::<Option<String>, _>("plan_type")
+                .ok()
+                .flatten()
+                .is_none_or(|value| {
+                    plan.is_some_and(|candidate| value.eq_ignore_ascii_case(candidate))
+                })
+        })
+        .filter(|row| {
+            row.try_get::<String, _>("profile_code")
+                .ok()
+                .is_some_and(|profile| profile.eq_ignore_ascii_case(preferred_profile))
+        })
+        .max_by_key(|row| {
+            let account_specific = row
+                .try_get::<Option<String>, _>("account_key")
+                .ok()
+                .flatten()
+                .is_some_and(|key| account_key.is_some_and(|value| key == value));
+            let plan_specific = row
+                .try_get::<Option<String>, _>("plan_type")
+                .ok()
+                .flatten()
+                .is_some_and(|value| {
+                    plan.is_some_and(|candidate| value.eq_ignore_ascii_case(candidate))
+                });
+            let effective_from = row
+                .try_get::<i64, _>("effective_from_ms")
+                .unwrap_or_default();
+            (
+                u8::from(account_specific) * 4 + u8::from(plan_specific) * 2,
+                effective_from,
+            )
+        })
+}
+
+fn default_capacity_profile(plan: Option<&str>) -> Option<&'static str> {
+    match plan.map(str::to_ascii_lowercase).as_deref() {
+        Some("plus") => Some("usd20"),
+        Some("team") => Some("usd100"),
+        Some("pro") => Some("usd200"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        config::CapacityDefaults,
+        db::{SourceAppServerRecord, UsageWindowRecord},
+    };
+
+    #[tokio::test]
+    async fn current_report_uses_the_plus_capacity_default() {
+        let database = Database::connect_in_memory().await.unwrap();
+        database
+            .ensure_default_capacities(&CapacityDefaults::default())
+            .await
+            .unwrap();
+        database
+            .upsert_source_app_server(&SourceAppServerRecord {
+                source_key: "account:plus".to_owned(),
+                kind: "account".to_owned(),
+                first_seen_at_ms: 1,
+                last_seen_at_ms: 2,
+                plan_type: Some("plus".to_owned()),
+                status: "ok".to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        database
+            .replace_rollups(
+                &[],
+                &[],
+                &[UsageWindowRecord {
+                    window_id: "window:plus".to_owned(),
+                    window_kind: "primary".to_owned(),
+                    window_start_ms: Some(1),
+                    resets_at_ms: Some(2),
+                    ..Default::default()
+                }],
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let report = build_report(&database, None).await.unwrap();
+
+        assert_eq!(report["current"]["account"]["weekly_credit"], json!(3200.0));
+    }
 }
 
 fn validation_json(
