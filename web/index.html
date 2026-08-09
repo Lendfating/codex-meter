@@ -133,7 +133,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     .day-cell .day-missing{color:#a2a79e}
     .day-cell.tone-4 .day-number,.day-cell.tone-4 small{color:#2c644a}
     .day-cell{position:relative}
-    .day-cell.loading{cursor:wait;opacity:.7}
+    .day-cell.date-loading{cursor:wait;opacity:.7}
     .day-cell::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1f2822;color:#edf5ee;font-size:11px;line-height:1.5;padding:7px 10px;border-radius:8px;white-space:pre;box-shadow:0 6px 20px #00000030;z-index:20;opacity:0;pointer-events:none;transition:opacity .12s}
     .day-cell:hover::after{opacity:1}
     .chart-panel{min-width:0}
@@ -1129,7 +1129,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     function dashMoney(value){return number(value)==null?'—':money(value)}
     function calendarPanel(){
       var cells=calendarDays(),status=reportLoadingDate?'正在加载 '+dateLabel(reportLoadingDate)+'…':'默认选中 '+(selectedDate || latestDate());
-      return '<section class="panel calendar-panel"><div class="calendar-head"><h3>最近 30 天</h3><span>'+esc(status)+'</span></div><div class="calendar-legend"><span>T 本机 / 账号</span><span>$ API 美元 · C Credit</span><span>Δ% 本机 / 官方 · 本机按当日套餐额度</span></div><div class="weekday-row"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class="calendar-grid">'+cells.map(function(cell){if(cell.blank)return '<span class="blank"></span>';var d=cell.data,localToken=d && d.usage && d.usage.total,accountToken=accountTokenForDay(d),localPct=localDailyPercent(d),officialPct=officialDailyPercent(d),selected=cell.key===selectedDate,loading=cell.key===reportLoadingDate;      var tip=dateLabel(cell.key)+'\n本机 Token '+dashTokens(localToken)+'，账号 Token '+dashTokens(accountToken)+'\nAPI 美元 '+dashMoney(d && d.api_usd)+'，Credit '+(d?creditText(d.credit):'—')+'\nΔ 本机 '+(localPct==null?'—':percentPrecise(localPct))+'，Δ 官方 '+(officialPct==null?'—':percentPrecise(officialPct));      return '<button class="day-cell '+tone(d)+(selected?' selected':'')+(loading?' loading':'')+'" data-date="'+esc(cell.key)+'" data-tip="'+esc(tip)+'" aria-busy="'+(loading?'true':'false')+'" aria-label="'+esc(dateLabel(cell.key)+' 本机 Token '+dashTokens(localToken)+'，账号 Token '+dashTokens(accountToken))+'"><span class="day-number">'+esc(dateLabel(cell.key))+'</span><strong class="day-token">T'+dashTokens(localToken)+'/'+dashTokens(accountToken)+'</strong><small>'+dashMoney(d && d.api_usd)+'·C'+(d?creditText(d.credit):'—')+'</small><small class="day-percent">Δ%'+(localPct==null?'—':percent(localPct))+'/'+(officialPct==null?'—':percent(officialPct))+'</small></button>'}).join('')+'</div></section>';
+      return '<section class="panel calendar-panel"><div class="calendar-head"><h3>最近 30 天</h3><span>'+esc(status)+'</span></div><div class="calendar-legend"><span>T 本机 / 账号</span><span>$ API 美元 · C Credit</span><span>Δ% 本机 / 官方 · 本机按当日套餐额度</span></div><div class="weekday-row"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class="calendar-grid">'+cells.map(function(cell){if(cell.blank)return '<span class="blank"></span>';var d=cell.data,localToken=d && d.usage && d.usage.total,accountToken=accountTokenForDay(d),localPct=localDailyPercent(d),officialPct=officialDailyPercent(d),selected=cell.key===selectedDate,loading=cell.key===reportLoadingDate;      var tip=dateLabel(cell.key)+'\n本机 Token '+dashTokens(localToken)+'，账号 Token '+dashTokens(accountToken)+'\nAPI 美元 '+dashMoney(d && d.api_usd)+'，Credit '+(d?creditText(d.credit):'—')+'\nΔ 本机 '+(localPct==null?'—':percentPrecise(localPct))+'，Δ 官方 '+(officialPct==null?'—':percentPrecise(officialPct));      return '<button class="day-cell '+tone(d)+(selected?' selected':'')+(loading?' date-loading':'')+'" data-date="'+esc(cell.key)+'" data-tip="'+esc(tip)+'" aria-busy="'+(loading?'true':'false')+'" aria-label="'+esc(dateLabel(cell.key)+' 本机 Token '+dashTokens(localToken)+'，账号 Token '+dashTokens(accountToken))+'"><span class="day-number">'+esc(dateLabel(cell.key))+'</span><strong class="day-token">T'+dashTokens(localToken)+'/'+dashTokens(accountToken)+'</strong><small>'+dashMoney(d && d.api_usd)+'·C'+(d?creditText(d.credit):'—')+'</small><small class="day-percent">Δ%'+(localPct==null?'—':percent(localPct))+'/'+(officialPct==null?'—':percent(officialPct))+'</small></button>'}).join('')+'</div></section>';
     }
     function dayTrendPanel(){
       var chart=dayMetric==='official'?chartDiv('dailyWindowPercent',450):chartDiv('dayTrend',420);
@@ -1415,7 +1415,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       document.querySelectorAll('[data-date]').forEach(function(element){
         var selected=element.dataset.date===selectedDate,loading=element.dataset.date===reportLoadingDate;
         element.classList.toggle('selected',selected);
-        element.classList.toggle('loading',loading);
+        element.classList.toggle('date-loading',loading);
         element.setAttribute('aria-busy',loading?'true':'false');
       });
       var status=document.querySelector('.calendar-head span');
