@@ -93,6 +93,7 @@ pub(super) async fn scan_once(
     };
     let replay_elapsed = replay_started.elapsed();
     let mut records = Vec::new();
+    let from_ms = collector.from_date.map(date_start_ms);
     for file in parsed {
         let mut replay_state = ReplayState::new(replay_specs.get(&file.path));
         for mut record in file.records {
@@ -104,6 +105,9 @@ pub(super) async fn scan_once(
                 continue;
             }
             enrich_record_from_metadata(&mut record, &local_metadata, &parent_graph);
+            if from_ms.is_some_and(|from| record.observed_at_ms < from) {
+                continue;
+            }
             report.recognized_events += 1;
             records.push(record);
         }

@@ -133,6 +133,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     .day-cell .day-missing{color:#a2a79e}
     .day-cell.tone-4 .day-number,.day-cell.tone-4 small{color:#2c644a}
     .day-cell{position:relative}
+    .day-cell.loading{cursor:wait;opacity:.7}
     .day-cell::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1f2822;color:#edf5ee;font-size:11px;line-height:1.5;padding:7px 10px;border-radius:8px;white-space:pre;box-shadow:0 6px 20px #00000030;z-index:20;opacity:0;pointer-events:none;transition:opacity .12s}
     .day-cell:hover::after{opacity:1}
     .chart-panel{min-width:0}
@@ -271,6 +272,8 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
   (function(){
     var app = document.getElementById('app');
     var report = null;
+    var reportRequestSerial = 0;
+    var reportLoadingDate = null;
     var syncTime = null;
     var page = 'usage';
     var usageScope = 'day';
@@ -1101,7 +1104,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
         if(option===null){element.innerHTML='<div class="chart-empty">暂无可绘制数据<br><span>待对应字段采集后填充</span></div>';return}
         var chart=echarts.init(element);
         chart.setOption(option);
-        chart.on('click',function(params){var key=params && params.data && params.data.dateKey;if(key){selectedDate=key;load(key)}});
+        chart.on('click',function(params){var key=params && params.data && params.data.dateKey;if(key) selectDate(key)});
         element.__chart=chart;
       });
     }
@@ -1125,8 +1128,8 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     function dashTokens(value){return number(value)==null?'—':tokens(value)}
     function dashMoney(value){return number(value)==null?'—':money(value)}
     function calendarPanel(){
-      var cells=calendarDays();
-      return '<section class="panel calendar-panel"><div class="calendar-head"><h3>最近 30 天</h3><span>默认选中 '+esc(selectedDate || latestDate())+'</span></div><div class="calendar-legend"><span>T 本机 / 账号</span><span>$ API 美元 · C Credit</span><span>Δ% 本机 / 官方 · 本机按当日套餐额度</span></div><div class="weekday-row"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class="calendar-grid">'+cells.map(function(cell){if(cell.blank)return '<span class="blank"></span>';var d=cell.data,localToken=d && d.usage && d.usage.total,accountToken=accountTokenForDay(d),localPct=localDailyPercent(d),officialPct=officialDailyPercent(d);      var tip=dateLabel(cell.key)+'\n本机 Token '+dashTokens(localToken)+'，账号 Token '+dashTokens(accountToken)+'\nAPI 美元 '+dashMoney(d && d.api_usd)+'，Credit '+(d?creditText(d.credit):'—')+'\nΔ 本机 '+(localPct==null?'—':percentPrecise(localPct))+'，Δ 官方 '+(officialPct==null?'—':percentPrecise(officialPct));      return '<button class="day-cell '+tone(d)+' '+(cell.key===selectedDate?'selected':'')+'" data-date="'+esc(cell.key)+'" data-tip="'+esc(tip)+'" aria-label="'+esc(dateLabel(cell.key)+' 本机 Token '+dashTokens(localToken)+'，账号 Token '+dashTokens(accountToken))+'"><span class="day-number">'+esc(dateLabel(cell.key))+'</span><strong class="day-token">T'+dashTokens(localToken)+'/'+dashTokens(accountToken)+'</strong><small>'+dashMoney(d && d.api_usd)+'·C'+(d?creditText(d.credit):'—')+'</small><small class="day-percent">Δ%'+(localPct==null?'—':percent(localPct))+'/'+(officialPct==null?'—':percent(officialPct))+'</small></button>'}).join('')+'</div></section>';
+      var cells=calendarDays(),status=reportLoadingDate?'正在加载 '+dateLabel(reportLoadingDate)+'…':'默认选中 '+(selectedDate || latestDate());
+      return '<section class="panel calendar-panel"><div class="calendar-head"><h3>最近 30 天</h3><span>'+esc(status)+'</span></div><div class="calendar-legend"><span>T 本机 / 账号</span><span>$ API 美元 · C Credit</span><span>Δ% 本机 / 官方 · 本机按当日套餐额度</span></div><div class="weekday-row"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div class="calendar-grid">'+cells.map(function(cell){if(cell.blank)return '<span class="blank"></span>';var d=cell.data,localToken=d && d.usage && d.usage.total,accountToken=accountTokenForDay(d),localPct=localDailyPercent(d),officialPct=officialDailyPercent(d),selected=cell.key===selectedDate,loading=cell.key===reportLoadingDate;      var tip=dateLabel(cell.key)+'\n本机 Token '+dashTokens(localToken)+'，账号 Token '+dashTokens(accountToken)+'\nAPI 美元 '+dashMoney(d && d.api_usd)+'，Credit '+(d?creditText(d.credit):'—')+'\nΔ 本机 '+(localPct==null?'—':percentPrecise(localPct))+'，Δ 官方 '+(officialPct==null?'—':percentPrecise(officialPct));      return '<button class="day-cell '+tone(d)+(selected?' selected':'')+(loading?' loading':'')+'" data-date="'+esc(cell.key)+'" data-tip="'+esc(tip)+'" aria-busy="'+(loading?'true':'false')+'" aria-label="'+esc(dateLabel(cell.key)+' 本机 Token '+dashTokens(localToken)+'，账号 Token '+dashTokens(accountToken))+'"><span class="day-number">'+esc(dateLabel(cell.key))+'</span><strong class="day-token">T'+dashTokens(localToken)+'/'+dashTokens(accountToken)+'</strong><small>'+dashMoney(d && d.api_usd)+'·C'+(d?creditText(d.credit):'—')+'</small><small class="day-percent">Δ%'+(localPct==null?'—':percent(localPct))+'/'+(officialPct==null?'—':percent(officialPct))+'</small></button>'}).join('')+'</div></section>';
     }
     function dayTrendPanel(){
       var chart=dayMetric==='official'?chartDiv('dailyWindowPercent',450):chartDiv('dayTrend',420);
@@ -1408,14 +1411,43 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       var active=groups[priceTab]||{rows:[]};
       return '<main class="page-content"><section class="panel method-copy"><h2>计算说明</h2><p>Token 先按 JSONL 的 last usage / cumulative 差分归一化；重复 cumulative 不重复计入，回退视为 reset。</p><p>Credit 和 API 等价美元使用事件发生时的静态价格卡，缓存读、缓存写、非缓存输入和输出分别计价；未知模型或 Fast 状态保持待定，不填 0。</p><p>JSONL 是本机主事实，App Server 只提供当前账号/官方窗口/账号日 Token，ccusage 只作为独立验证。</p><h3>静态价格卡 · '+esc(methodology.pricing_version || '待补数据')+'</h3>'+tabs+'<p class="chart-note">'+esc(priceRangeLabel(active))+'</p><h4>Credit 价格（订阅）</h4>'+priceTable(active.rows,'subscription')+'<h4>API 美元价格</h4>'+priceTable(active.rows,'api')+'</section></main>';
     }
+    function updateDateLoadingUI(){
+      document.querySelectorAll('[data-date]').forEach(function(element){
+        var selected=element.dataset.date===selectedDate,loading=element.dataset.date===reportLoadingDate;
+        element.classList.toggle('selected',selected);
+        element.classList.toggle('loading',loading);
+        element.setAttribute('aria-busy',loading?'true':'false');
+      });
+      var status=document.querySelector('.calendar-head span');
+      if(status) status.textContent=reportLoadingDate?'正在加载 '+dateLabel(reportLoadingDate)+'…':'默认选中 '+(selectedDate || latestDate());
+    }
+    function selectDate(date){
+      selectedDate=date;
+      reportLoadingDate=date;
+      updateDateLoadingUI();
+      load(date);
+    }
     async function load(date){
-      var url='/api/report'+(date ? '?date='+encodeURIComponent(date) : ''),response=await fetch(url,{headers:{'Accept':'application/json'}});
-      if(!response.ok) throw new Error('报告接口返回 HTTP '+response.status);
-      report=normalizeReport(await response.json());
-      selectedDate=report.selected_day && report.selected_day.date || date || latestDate();
-      ensureCapacityRange();
-      await checkProgress();
-      render();
+      var requestSerial=++reportRequestSerial;
+      reportLoadingDate=date || null;
+      try{
+        var url='/api/report'+(date ? '?date='+encodeURIComponent(date) : ''),response=await fetch(url,{headers:{'Accept':'application/json'}});
+        if(!response.ok) throw new Error('报告接口返回 HTTP '+response.status);
+        var payload=await response.json();
+        if(requestSerial!==reportRequestSerial) return;
+        report=normalizeReport(payload);
+        selectedDate=report.selected_day && report.selected_day.date || date || latestDate();
+        ensureCapacityRange();
+        await checkProgress();
+        if(requestSerial!==reportRequestSerial) return;
+        reportLoadingDate=null;
+        render();
+      }catch(error){
+        if(requestSerial!==reportRequestSerial) return;
+        reportLoadingDate=null;
+        updateDateLoadingUI();
+        throw error;
+      }
     }
     async function saveCapacity(code){
       var input=document.getElementById('capacity-'+code),value=Number(input && input.value);
@@ -1434,7 +1466,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       document.querySelectorAll('[data-page]').forEach(function(element){element.addEventListener('click',function(){page=element.dataset.page;render()})});
       document.getElementById('menu-toggle') && document.getElementById('menu-toggle').addEventListener('click',function(){menuOpen=!menuOpen;render()});
       document.querySelectorAll('[data-scope]').forEach(function(element){element.addEventListener('click',function(){usageScope=element.dataset.scope;render()})});
-      document.querySelectorAll('[data-date]').forEach(function(element){element.addEventListener('click',function(){selectedDate=element.dataset.date;load(selectedDate)})});
+      document.querySelectorAll('[data-date]').forEach(function(element){element.addEventListener('click',function(){selectDate(element.dataset.date)})});
       document.querySelectorAll('[data-window-select]').forEach(function(element){element.addEventListener('click',function(){selectedWindow=Number(element.dataset.windowSelect);render()})});
       document.querySelectorAll('[data-metric-scope]').forEach(function(element){element.addEventListener('click',function(){var scope=element.dataset.metricScope,metric=element.dataset.metric;if(scope==='day') dayMetric=metric;if(scope==='minute') minuteMetric=metric;if(scope==='week') weekMetric=metric;render()})});
       document.querySelectorAll('[data-price-tab]').forEach(function(element){element.addEventListener('click',function(){priceTab=Number(element.dataset.priceTab);render()})});
