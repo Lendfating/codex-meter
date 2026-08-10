@@ -14,6 +14,22 @@ Codex Meter 是一个本地小工具，用来回答两个问题：
 ./service.sh status
 ```
 
+源码目录启动时，脚本会使用本地 Rust 构建 release 二进制；从 GitHub 下载的
+Mac 发布包已经内置二进制，直接解压后运行上面的命令即可，不需要安装 Rust。
+发布包会把 `service.sh`、`README.md` 和 `bin/codex-meter` 一起放进 ZIP；运行时
+的数据库、游标和日志仍然写入包目录下自动创建的 `.runtime/`。
+
+## 下载 Mac 发布包
+
+GitHub Actions 会在推送 `v*` 版本标签后，自动构建并发布两个 Mac ZIP 包：
+
+- [Apple Silicon（M1/M2/M3/M4）直接下载](https://github.com/Lendfating/codex-meter/releases/latest/download/codex-meter-macos-arm64.zip)
+- [Intel Mac 直接下载](https://github.com/Lendfating/codex-meter/releases/latest/download/codex-meter-macos-x86_64.zip)
+- [打开最新 Release](https://github.com/Lendfating/codex-meter/releases/latest)
+
+运行包仍需要本机已有的 `codex` 命令来读取 App Server 的官方账号信息；ccusage
+对账还需要 `ccusage` 或 Node/npm（没有时只会跳过对账，不影响 JSONL 主流程）。
+
 浏览器打开 <http://127.0.0.1:18778/>。停止、重启和查看日志：
 
 ```sh
@@ -22,7 +38,8 @@ Codex Meter 是一个本地小工具，用来回答两个问题：
 ./service.sh logs
 ```
 
-脚本默认执行 `cargo build --release --offline`，默认数据库是
+源码目录中的脚本默认执行 `cargo build --release --offline`；如果发布包中存在
+`bin/codex-meter`，则直接使用该预编译文件，不调用 Cargo。默认数据库是
 `.runtime/codex-meter.sqlite`，默认从 `~/.codex` 读取
 `sessions/` 和 `archived_sessions/`。首次启动默认只回填最近 30 个自然日；
 需要更早历史时显式指定起始日期：
@@ -32,7 +49,7 @@ Codex Meter 是一个本地小工具，用来回答两个问题：
 ./service.sh start --from 2026-01-01
 ```
 
-已有构建产物时可加 `--no-build`。`--from` 为包含起始日的 JSONL 回填范围；
+源码已有构建产物时可加 `--no-build`。`--from` 为包含起始日的 JSONL 回填范围；
 后续轮询仍使用 cursor 增量扫描。App Server 始终启用（提供当前账号/
 官方配额），其失败不影响 JSONL 主流程。
 

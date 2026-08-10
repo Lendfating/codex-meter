@@ -8,7 +8,13 @@ RUNTIME_DIR="$REPO_ROOT/.runtime"
 PID_FILE="$RUNTIME_DIR/codex-meter.pid"
 LOG_FILE="$RUNTIME_DIR/codex-meter.log"
 DB_PATH="$RUNTIME_DIR/codex-meter.sqlite"
-BIN="$REPO_ROOT/target/release/codex-meter"
+PREBUILT_BIN="$REPO_ROOT/bin/codex-meter"
+SOURCE_BIN="$REPO_ROOT/target/release/codex-meter"
+if [ -x "$PREBUILT_BIN" ]; then
+  BIN="$PREBUILT_BIN"
+else
+  BIN="$SOURCE_BIN"
+fi
 
 # Command-line defaults; overridden by --options below.
 PORT=18778
@@ -100,7 +106,7 @@ sync_phase() {
 }
 
 ensure_binary() {
-  if [ "$SKIP_BUILD" != "1" ]; then
+  if [ "$BIN" = "$SOURCE_BIN" ] && [ "$SKIP_BUILD" != "1" ]; then
     printf 'codex-meter: building %s\n' "$BIN"
     (cd "$REPO_ROOT" && cargo build --release --offline)
   fi

@@ -1,0 +1,77 @@
+name: Release macOS packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build macOS ${{ matrix.arch }} package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Select stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Build release binary
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+
+      - name: Assemble ZIP package
+        shell: bash
+        run: |
+          package_root="codex-meter-macos-${{ matrix.arch }}"
+          mkdir -p "dist/${package_root}/bin"
+          cp "target/${{ matrix.target }}/release/codex-meter" "dist/${package_root}/bin/codex-meter"
+          cp service.sh README.md "dist/${package_root}/"
+          chmod +x "dist/${package_root}/service.sh" "dist/${package_root}/bin/codex-meter"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/${package_root}" \
+            "dist/${package_root}.zip"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.arch }}
+          path: dist/codex-meter-macos-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release assets
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download architecture packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create release and upload ZIP files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Codex Meter $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/codex-meter-macos-arm64.zip \
+            dist/codex-meter-macos-x86_64.zip
