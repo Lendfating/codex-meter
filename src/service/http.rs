@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 use crate::{
-    db::{CapacityRecord, Database, DbError},
+    db::{Database, DbError},
     pipelines::{
         result::materialize::{refresh_rollups, MaterializeError},
         source::{
@@ -140,7 +140,6 @@ pub struct ReportQuery {
 pub struct CapacityInput {
     pub plan_code: String,
     pub credit: f64,
-    pub effective_from_ms: Option<i64>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -260,36 +259,13 @@ async fn save_capacity(
             "credit must be a finite non-negative number".to_owned(),
         ));
     }
-    let account = state
+    state
         .database
-        .list_source_app_server()
-        .await?
-        .into_iter()
-        .filter(|row| row.try_get::<String, _>("kind").ok().as_deref() == Some("account"))
-        .max_by_key(|row| row.try_get::<i64, _>("last_seen_at_ms").unwrap_or_default());
-    let account_key = account.as_ref().and_then(|row| {
-        row.try_get::<Option<String>, _>("account_key")
-            .ok()
-            .flatten()
-    });
-    let plan_type = account
-        .as_ref()
-        .and_then(|row| row.try_get::<Option<String>, _>("plan_type").ok().flatten());
-    let effective_from_ms = input.effective_from_ms.unwrap_or_else(now_ms);
-    let id = state
-        .database
-        .upsert_capacity(&CapacityRecord {
-            profile_code: input.plan_code.clone(),
-            account_key: account_key.clone(),
-            plan_type: plan_type.clone(),
-            weekly_credit: input.credit,
-            effective_from_ms,
-            effective_to_ms: None,
-            confirmed_at_ms: now_ms(),
-        })
+        .set_current_capacity(&input.plan_code, input.credit, now_ms())
         .await?;
+    refresh_rollups(&state.database).await?;
     Ok(Json(
-        json!({"status":"ok","id":id,"plan_code":input.plan_code,"credit":input.credit,"effective_from_ms":effective_from_ms}),
+        json!({"status":"ok","plan_code":input.plan_code,"credit":input.credit}),
     ))
 }
 
@@ -304,7 +280,7 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::UsageWindowRecord;
+    use crate::{config::CapacityDefaults, db::UsageWindowRecord};
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
 
@@ -387,5 +363,45 @@ mod tests {
             .unwrap();
         let report: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(report["quota_windows"][0]["window_id"], "window:test");
+    }
+
+    #[tokio::test]
+    async fn saving_capacity_overwrites_the_canonical_value_exactly() {
+        let database = Database::connect_in_memory().await.unwrap();
+        database
+            .ensure_default_capacities(&CapacityDefaults::default())
+            .await
+            .unwrap();
+        let app = router(AppState {
+            database: database.clone(),
+            collector: JsonlCollector::new("/tmp/no-codex"),
+            ccusage: CcusageCollector::disabled("/tmp/no-codex", "Asia/Shanghai"),
+            sync_state: SyncState::new(),
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/capacities")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"plan_code":"usd100","credit":13800}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let saved: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(saved["credit"], json!(13_800.0));
+        let rows = database.list_current_capacities().await.unwrap();
+        let usd100 = rows
+            .iter()
+            .find(|row| row.try_get::<String, _>("profile_code").unwrap() == "usd100")
+            .unwrap();
+        assert_eq!(usd100.try_get::<f64, _>("weekly_credit").unwrap(), 13_800.0);
     }
 }

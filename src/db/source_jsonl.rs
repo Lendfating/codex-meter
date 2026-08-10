@@ -27,7 +27,19 @@ const SOURCE_JSONL_UPSERT: &str = "INSERT INTO source_jsonl
      resets_at_ms, quality)
  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
  ON CONFLICT(source_key) DO UPDATE SET
-    last_seen_at_ms = COALESCE(excluded.last_seen_at_ms, source_jsonl.last_seen_at_ms),
+    observed_at_ms = CASE
+        WHEN source_jsonl.kind = 'quota'
+        THEN MIN(source_jsonl.observed_at_ms, excluded.observed_at_ms)
+        ELSE source_jsonl.observed_at_ms
+    END,
+    last_seen_at_ms = CASE
+        WHEN source_jsonl.kind = 'quota'
+        THEN MAX(
+            COALESCE(source_jsonl.last_seen_at_ms, source_jsonl.observed_at_ms),
+            COALESCE(excluded.last_seen_at_ms, excluded.observed_at_ms)
+        )
+        ELSE COALESCE(excluded.last_seen_at_ms, source_jsonl.last_seen_at_ms)
+    END,
     parent_session_id = COALESCE(excluded.parent_session_id, source_jsonl.parent_session_id),
     root_session_id = COALESCE(excluded.root_session_id, source_jsonl.root_session_id),
     turn_id = COALESCE(excluded.turn_id, source_jsonl.turn_id),
@@ -91,8 +103,8 @@ fn replace_if_some<T>(target: &mut Option<T>, incoming: Option<T>) {
 fn merge_record(target: &mut SourceJsonlRecord, incoming: SourceJsonlRecord) {
     let SourceJsonlRecord {
         source_key: _,
-        kind: _,
-        observed_at_ms: _,
+        kind,
+        observed_at_ms,
         last_seen_at_ms,
         session_id: _,
         parent_session_id,
@@ -121,7 +133,16 @@ fn merge_record(target: &mut SourceJsonlRecord, incoming: SourceJsonlRecord) {
         quality,
     } = incoming;
 
-    replace_if_some(&mut target.last_seen_at_ms, last_seen_at_ms);
+    if target.kind == "quota" && kind == "quota" {
+        let latest_seen = target
+            .last_seen_at_ms
+            .unwrap_or(target.observed_at_ms)
+            .max(last_seen_at_ms.unwrap_or(observed_at_ms));
+        target.observed_at_ms = target.observed_at_ms.min(observed_at_ms);
+        target.last_seen_at_ms = Some(latest_seen);
+    } else {
+        replace_if_some(&mut target.last_seen_at_ms, last_seen_at_ms);
+    }
     replace_if_some(&mut target.parent_session_id, parent_session_id);
     replace_if_some(&mut target.root_session_id, root_session_id);
     replace_if_some(&mut target.turn_id, turn_id);
@@ -149,6 +170,33 @@ fn merge_record(target: &mut SourceJsonlRecord, incoming: SourceJsonlRecord) {
 }
 
 impl Database {
+    pub async fn has_inverted_jsonl_quota_times(&self) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(
+                SELECT 1 FROM source_jsonl
+                WHERE kind = 'quota'
+                  AND last_seen_at_ms IS NOT NULL
+                  AND observed_at_ms > last_seen_at_ms
+            )",
+        )
+        .fetch_one(&self.pool)
+        .await?
+            != 0)
+    }
+
+    pub async fn repair_inverted_jsonl_quota_times(&self) -> Result<u64, DbError> {
+        Ok(sqlx::query(
+            "UPDATE source_jsonl
+             SET observed_at_ms = last_seen_at_ms
+             WHERE kind = 'quota'
+               AND last_seen_at_ms IS NOT NULL
+               AND observed_at_ms > last_seen_at_ms",
+        )
+        .execute(&self.pool)
+        .await?
+        .rows_affected())
+    }
+
     pub async fn upsert_source_jsonl_batch(
         &self,
         records: Vec<SourceJsonlRecord>,

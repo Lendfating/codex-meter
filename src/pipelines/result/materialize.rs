@@ -23,6 +23,10 @@ use crate::{
 
 const RESET_DROP_PERCENT: f64 = 5.0;
 const RESET_TIME_JITTER_MS: i64 = 5 * 60 * 1_000;
+const INFERRED_RESET_DROP_PERCENT: f64 = 40.0;
+const INFERRED_RESET_MIN_PREVIOUS_PERCENT: f64 = 50.0;
+const INFERRED_RESET_MAX_NEW_PERCENT: f64 = 50.0;
+const INFERRED_RESET_MIN_GAP_MS: i64 = 30 * 60 * 1_000;
 
 #[derive(Debug, Error)]
 pub enum MaterializeError {
@@ -98,6 +102,7 @@ struct WindowSegment {
     reset_at_ms: Option<i64>,
     window_minutes: Option<i64>,
     plan_type: Option<String>,
+    quality: BTreeSet<String>,
     ordinal: usize,
 }
 
@@ -335,6 +340,7 @@ pub async fn refresh_rollups(database: &Database) -> Result<MaterializeSummary, 
             (
                 id,
                 WindowAggregate {
+                    quality: segment.quality.clone(),
                     segment,
                     ..WindowAggregate::default()
                 },
@@ -413,6 +419,7 @@ pub async fn refresh_rollups(database: &Database) -> Result<MaterializeSummary, 
             local_date: date.clone(),
             ..Default::default()
         });
+        day.quality.extend(bucket.quality.iter().cloned());
         day.official_start.get_or_insert(official.percent);
         day.official_end = Some(official.percent);
         let key = (date.clone(), window_id.clone());
@@ -682,6 +689,9 @@ fn empty_minute(
             .or_else(|| account.account_key.clone()),
         plan_type: segment.and_then(|value| value.plan_type.clone()),
         provider: account.provider.clone(),
+        quality: segment
+            .map(|value| value.quality.clone())
+            .unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -980,7 +990,7 @@ fn retain_canonical_primary_quotas(quotas: Vec<QuotaObservation>) -> Vec<QuotaOb
 
 async fn load_capacities(database: &Database) -> Result<Vec<Capacity>, MaterializeError> {
     Ok(database
-        .list_capacities()
+        .list_current_capacities()
         .await?
         .into_iter()
         .map(|row| {
@@ -1025,6 +1035,41 @@ fn valid_reset_transition(
     previous_reset
         .zip(quota.resets_at_ms)
         .is_some_and(|(old, new)| percent_reset && new.saturating_sub(old) > RESET_TIME_JITTER_MS)
+}
+
+fn inferred_reset_transition(
+    previous_percent: Option<f64>,
+    previous_reset: Option<i64>,
+    previous_source: Option<&str>,
+    previous_observed_at_ms: Option<i64>,
+    quota: &QuotaObservation,
+) -> bool {
+    if previous_source != Some("jsonl") || quota.source != "jsonl" {
+        return false;
+    }
+    let Some(previous_observed_at_ms) = previous_observed_at_ms else {
+        return false;
+    };
+    if quota
+        .first_seen_at_ms
+        .saturating_sub(previous_observed_at_ms)
+        < INFERRED_RESET_MIN_GAP_MS
+    {
+        return false;
+    }
+    let Some((old, new)) = previous_percent.zip(quota.used_percent) else {
+        return false;
+    };
+    if old < INFERRED_RESET_MIN_PREVIOUS_PERCENT
+        || new > INFERRED_RESET_MAX_NEW_PERCENT
+        || old - new < INFERRED_RESET_DROP_PERCENT
+    {
+        return false;
+    }
+    // If both observations carry a reset timestamp, the explicit transition
+    // rule owns the decision. Inference is only a fallback for a missing
+    // boundary, such as a machine that was powered off during Reset.
+    !matches!((previous_reset, quota.resets_at_ms), (Some(_), Some(_)))
 }
 
 fn enforce_disjoint_windows(mut windows: Vec<WindowSegment>) -> Vec<WindowSegment> {
@@ -1074,10 +1119,20 @@ fn build_windows(quotas: &[QuotaObservation]) -> Vec<WindowSegment> {
         let mut current: Option<WindowSegment> = None;
         let mut previous_percent = None;
         let mut previous_reset: Option<i64> = None;
+        let mut previous_source: Option<&'static str> = None;
+        let mut previous_observed_at_ms = None;
         let mut ordinal = 0;
         for quota in values {
+            let inferred_reset = inferred_reset_transition(
+                previous_percent,
+                previous_reset,
+                previous_source,
+                previous_observed_at_ms,
+                quota,
+            );
             let starts_new = current.is_none()
-                || valid_reset_transition(previous_percent, previous_reset, quota);
+                || valid_reset_transition(previous_percent, previous_reset, quota)
+                || inferred_reset;
             if starts_new {
                 if let Some(mut value) = current.take() {
                     if value.start_at_ms < quota.first_seen_at_ms {
@@ -1086,8 +1141,14 @@ fn build_windows(quotas: &[QuotaObservation]) -> Vec<WindowSegment> {
                         // reset timestamp overlapping the new interval.
                         value.reset_at_ms = Some(quota.first_seen_at_ms);
                     }
+                    if inferred_reset {
+                        value.quality.insert("inferred_after_gap".to_owned());
+                    }
                     windows.push(value);
                 }
+                let quality = inferred_reset
+                    .then(|| BTreeSet::from(["inferred_after_gap".to_owned()]))
+                    .unwrap_or_default();
                 current = Some(WindowSegment {
                     id: format!("window:{group}:{ordinal}"),
                     account_key: quota.account_key.clone(),
@@ -1097,6 +1158,7 @@ fn build_windows(quotas: &[QuotaObservation]) -> Vec<WindowSegment> {
                     reset_at_ms: quota.resets_at_ms,
                     window_minutes: quota.window_minutes,
                     plan_type: quota.plan_type.clone(),
+                    quality,
                     ordinal,
                 });
                 ordinal += 1;
@@ -1120,6 +1182,8 @@ fn build_windows(quotas: &[QuotaObservation]) -> Vec<WindowSegment> {
                 }
             };
             previous_reset = merged_reset_at(previous_reset, quota.resets_at_ms);
+            previous_source = Some(quota.source);
+            previous_observed_at_ms = Some(quota.first_seen_at_ms);
         }
         if let Some(value) = current {
             windows.push(value);
@@ -2187,6 +2251,36 @@ mod tests {
         let windows = build_windows(&values);
         assert_eq!(windows.len(), 2);
         assert_eq!(windows[0].reset_at_ms, Some(1_120_000));
+    }
+
+    #[test]
+    fn reset_windows_infer_jsonl_reset_after_missing_boundary() {
+        let values = vec![
+            (1_000_000_i64, 97.0),
+            (1_000_000 + INFERRED_RESET_MIN_GAP_MS + 1, 5.0),
+        ]
+        .into_iter()
+        .map(|(first_seen_at_ms, used_percent)| QuotaObservation {
+            first_seen_at_ms,
+            last_seen_at_ms: first_seen_at_ms,
+            account_key: Some("account".to_owned()),
+            limit_id: Some("codex".to_owned()),
+            window_kind: "primary".to_owned(),
+            used_percent: Some(used_percent),
+            window_minutes: Some(10_080),
+            resets_at_ms: None,
+            plan_type: Some("pro".to_owned()),
+            source: "jsonl",
+            priority: 1,
+        })
+        .collect::<Vec<_>>();
+
+        let windows = build_windows(&values);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].reset_at_ms, Some(values[1].first_seen_at_ms));
+        assert!(windows
+            .iter()
+            .all(|window| window.quality.contains("inferred_after_gap")));
     }
 
     #[test]

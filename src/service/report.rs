@@ -117,7 +117,7 @@ pub async fn build_report(
     let minutes = database.list_usage_minute().await?;
     let usage_windows = database.list_usage_window().await?;
     let sessions = database.list_usage_session().await?;
-    let capacities = database.list_capacities().await?;
+    let capacities = database.list_current_capacities().await?;
     let app = database.list_source_app_server().await?;
     let ccusage = database.list_source_ccusage().await?;
     let source_jsonl = database.list_source_jsonl().await?;
@@ -161,7 +161,7 @@ pub async fn build_report(
     let session_views = session_json(&selected_sessions)?;
     let validation = validation_json(&ccusage, &daily)?;
     let windows = window_json(&usage_windows, &minutes, &sessions)?;
-    let current = current_json(&app, &minutes, &windows, &capacities)?;
+    let current = current_json(&app, &minutes, &windows, &capacities, &source_jsonl)?;
     let capacity_values = capacities
         .iter()
         .map(|row| {
@@ -478,64 +478,94 @@ fn current_json(
     minutes: &[sqlx::sqlite::SqliteRow],
     windows: &[Value],
     capacities: &[sqlx::sqlite::SqliteRow],
+    source_jsonl: &[sqlx::sqlite::SqliteRow],
+) -> Result<Value, ReportError> {
+    current_json_at(app, minutes, windows, capacities, source_jsonl, now_ms())
+}
+
+const CURRENT_OFFICIAL_MAX_AGE_MS: i64 = 15 * 60 * 1_000;
+
+fn current_json_at(
+    app: &[sqlx::sqlite::SqliteRow],
+    minutes: &[sqlx::sqlite::SqliteRow],
+    windows: &[Value],
+    capacities: &[sqlx::sqlite::SqliteRow],
+    source_jsonl: &[sqlx::sqlite::SqliteRow],
+    now: i64,
 ) -> Result<Value, ReportError> {
     let account = app
         .iter()
         .filter(|row| row.try_get::<String, _>("kind").ok().as_deref() == Some("account"))
+        .filter(|row| row.try_get::<String, _>("status").ok().as_deref() == Some("ok"))
         .max_by_key(|row| row.try_get::<i64, _>("last_seen_at_ms").unwrap_or_default());
-    let quota = app
+    let app_quota_any = preferred_quota(app, true);
+    let jsonl_quota_any = preferred_quota(source_jsonl, false);
+    let app_quota = app_quota_any.filter(|row| is_fresh(row_timestamp(row, true), now));
+    let jsonl_quota = jsonl_quota_any.filter(|row| is_fresh(row_timestamp(row, false), now));
+    let quota = app_quota.or(jsonl_quota);
+    let recent_minute = minutes
         .iter()
-        .filter(|row| row.try_get::<String, _>("kind").ok().as_deref() == Some("quota"))
         .filter(|row| {
-            row.try_get::<Option<String>, _>("window_kind")
+            row.try_get::<Option<f64>, _>("official_used_percent")
                 .ok()
                 .flatten()
-                .is_none_or(|kind| kind == "primary")
+                .is_some()
         })
         .filter(|row| {
-            row.try_get::<Option<String>, _>("limit_id")
+            row.try_get::<i64, _>("minute_start_ms")
                 .ok()
-                .flatten()
-                .as_deref()
-                == Some("codex")
+                .is_some_and(|observed| is_fresh(observed, now))
         })
-        .max_by_key(|row| row.try_get::<i64, _>("last_seen_at_ms").unwrap_or_default())
-        .or_else(|| {
-            app.iter()
-                .filter(|row| {
-                    row.try_get::<String, _>("kind").ok().as_deref() == Some("quota")
-                })
-                .filter(|row| {
-                    row.try_get::<Option<String>, _>("window_kind")
-                        .ok()
-                        .flatten()
-                        .is_none_or(|kind| kind == "primary")
-                })
-                .max_by_key(|row| row.try_get::<i64, _>("last_seen_at_ms").unwrap_or_default())
-        })
-        .or_else(|| {
-            app.iter()
-                .filter(|row| {
-                    row.try_get::<String, _>("kind").ok().as_deref() == Some("quota")
-                })
-                .max_by_key(|row| row.try_get::<i64, _>("last_seen_at_ms").unwrap_or_default())
-        });
-    let account_key = account.and_then(|row| {
-        row.try_get::<Option<String>, _>("account_key")
+        .max_by_key(|row| row.try_get::<i64, _>("minute_start_ms").unwrap_or_default());
+    let app_is_fresh = app_quota.is_some();
+    let jsonl_is_fresh = jsonl_quota.is_some();
+    let official_source = if app_is_fresh {
+        "app_server"
+    } else if jsonl_is_fresh {
+        "jsonl"
+    } else if let Some(row) = recent_minute {
+        match row
+            .try_get::<Option<String>, _>("official_source")
             .ok()
             .flatten()
-    });
-    let plan = account.and_then(|row| row.try_get::<Option<String>, _>("plan_type").ok().flatten());
-    let used = quota
-        .and_then(|row| row.try_get::<Option<f64>, _>("used_percent").ok().flatten())
+            .as_deref()
+        {
+            Some("app_server") => "app_server",
+            _ => "jsonl",
+        }
+    } else {
+        "none"
+    };
+    let account_key = account
+        .and_then(|row| {
+            row.try_get::<Option<String>, _>("account_key")
+                .ok()
+                .flatten()
+        })
         .or_else(|| {
-            minutes.iter().rev().find_map(|row| {
-                row.try_get::<Option<f64>, _>("official_used_percent")
+            quota.and_then(|row| {
+                row.try_get::<Option<String>, _>("account_key")
                     .ok()
                     .flatten()
             })
         });
-    let reset = quota.and_then(|row| row.try_get::<Option<i64>, _>("resets_at_ms").ok().flatten());
+    let plan = account
+        .and_then(|row| row.try_get::<Option<String>, _>("plan_type").ok().flatten())
+        .or_else(|| {
+            app_quota_any
+                .and_then(|row| row.try_get::<Option<String>, _>("plan_type").ok().flatten())
+        })
+        .or_else(|| {
+            jsonl_quota_any
+                .and_then(|row| row.try_get::<Option<String>, _>("plan_type").ok().flatten())
+        });
+    let used = quota
+        .and_then(|row| row.try_get::<Option<f64>, _>("used_percent").ok().flatten())
+        .or_else(|| recent_minute.and_then(|row| row.try_get("official_used_percent").ok()));
+    let reset = quota
+        .and_then(|row| row.try_get::<Option<i64>, _>("resets_at_ms").ok().flatten())
+        .or_else(|| recent_minute.and_then(|row| row.try_get("resets_at_ms").ok()));
+    let official_available = used.is_some() || reset.is_some();
     let window = reset
         .and_then(|reset| {
             windows
@@ -558,11 +588,12 @@ fn current_json(
                 .find(|window| window.get("window_kind").and_then(Value::as_str) == Some("primary"))
         })
         .or_else(|| windows.last());
-    let weekly_credit = window
-        .and_then(|window| window.get("start_at_ms").and_then(Value::as_i64))
-        .and_then(|start| {
-            select_current_capacity(capacities, account_key.as_deref(), plan.as_deref(), start)
-        })
+    let weekly_credit = select_current_capacity(
+        capacities,
+        account_key.as_deref(),
+        plan.as_deref(),
+        now,
+    )
         .and_then(|row| row.try_get::<f64, _>("weekly_credit").ok());
     let window_value = window.cloned().unwrap_or_else(|| json!({"window_id":Value::Null,"start_at_ms":Value::Null,"reset_at_ms":reset,"local_tokens":Value::Null,"local_credit":Value::Null,"local_api_usd":Value::Null,"local_percent":Value::Null}));
     let local_percent = window_value
@@ -577,6 +608,12 @@ fn current_json(
         object.remove("sessions");
         object.insert("local_percent".to_owned(), json!(local_percent));
         object.insert("weekly_credit".to_owned(), json!(weekly_credit));
+        if reset.is_none() {
+            object.insert("reset_at_ms".to_owned(), Value::Null);
+        }
+        if !official_available {
+            object.insert("official_stale".to_owned(), json!(true));
+        }
     }
     let account_daily_tokens = app
         .iter()
@@ -604,15 +641,96 @@ fn current_json(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let mut quality_flags = Vec::new();
+    if !app_is_fresh {
+        quality_flags.push(if app_quota_any.is_some() {
+            "app_server_stale"
+        } else {
+            "app_server_unavailable"
+        });
+    }
+    if jsonl_is_fresh && !app_is_fresh {
+        quality_flags.push("official_fallback_jsonl");
+    }
+    if !official_available {
+        quality_flags.push("official_unavailable");
+    }
+    if weekly_credit.is_none() {
+        quality_flags.push("capacity_unconfirmed");
+    }
     Ok(json!({
         "machine":"local",
         "timezone":"Asia/Shanghai",
         "account":{"display":account.and_then(|row| row.try_get::<Option<String>, _>("account_label").ok().flatten()).or_else(|| plan.clone()),"account_key":account_key,"auth_kind":account.and_then(|row| row.try_get::<Option<String>, _>("auth_kind").ok().flatten()),"plan":plan,"provider":account.and_then(|row| row.try_get::<Option<String>, _>("provider").ok().flatten()),"weekly_credit":weekly_credit,"capacity_credit":weekly_credit,"observed_at_ms":account.and_then(|row| row.try_get::<i64, _>("last_seen_at_ms").ok())},
-        "official":{"used_percent":used,"remaining_percent":used.map(|value| (100.0-value).max(0.0)),"resets_at_ms":reset,"window_minutes":quota.and_then(|row| row.try_get::<Option<i64>, _>("window_minutes").ok().flatten()),"source":if quota.is_some(){"app_server"}else{"jsonl"},"window_id":window_value.get("window_id").cloned().unwrap_or(Value::Null)},
+        "official":{"used_percent":used,"remaining_percent":used.map(|value| (100.0-value).max(0.0)),"resets_at_ms":official_available.then_some(reset).flatten(),"window_minutes":quota.and_then(|row| row.try_get::<Option<i64>, _>("window_minutes").ok().flatten()),"source":official_available.then_some(official_source).unwrap_or("none"),"window_id":official_available.then(|| window_value.get("window_id").cloned().unwrap_or(Value::Null)).unwrap_or(Value::Null)},
         "local_window":local_window,
         "account_daily_tokens":account_daily_tokens,
-        "quality_flags": if used.is_none(){json!(["official_unavailable"])} else if weekly_credit.is_none(){json!(["capacity_unconfirmed"])} else {json!([])}
+        "quality_flags": quality_flags
     }))
+}
+
+fn preferred_quota(
+    rows: &[sqlx::sqlite::SqliteRow],
+    require_ok_status: bool,
+) -> Option<&sqlx::sqlite::SqliteRow> {
+    for preference in 0..3 {
+        let candidate = rows
+            .iter()
+            .filter(|row| row.try_get::<String, _>("kind").ok().as_deref() == Some("quota"))
+            .filter(|row| {
+                !require_ok_status
+                    || row.try_get::<String, _>("status").ok().as_deref() == Some("ok")
+            })
+            .filter(|row| {
+                if preference == 2 {
+                    return true;
+                }
+                let primary = row
+                    .try_get::<Option<String>, _>("window_kind")
+                    .ok()
+                    .flatten()
+                    .is_none_or(|kind| kind == "primary");
+                if !primary {
+                    return false;
+                }
+                preference == 1
+                    || row
+                        .try_get::<Option<String>, _>("limit_id")
+                        .ok()
+                        .flatten()
+                        .as_deref()
+                        == Some("codex")
+            })
+            .max_by_key(|row| row_timestamp(row, require_ok_status));
+        if candidate.is_some() {
+            return candidate;
+        }
+    }
+    None
+}
+
+fn row_timestamp(row: &sqlx::sqlite::SqliteRow, app_server: bool) -> i64 {
+    if app_server {
+        row.try_get::<i64, _>("last_seen_at_ms").unwrap_or_default()
+    } else {
+        row.try_get::<Option<i64>, _>("last_seen_at_ms")
+            .ok()
+            .flatten()
+            .or_else(|| row.try_get::<i64, _>("observed_at_ms").ok())
+            .unwrap_or_default()
+    }
+}
+
+fn is_fresh(timestamp: i64, now: i64) -> bool {
+    timestamp > 0 && now.saturating_sub(timestamp) <= CURRENT_OFFICIAL_MAX_AGE_MS
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|value| i64::try_from(value.as_millis()).ok())
+        .unwrap_or_default()
 }
 
 fn select_current_capacity<'a>(
@@ -693,7 +811,7 @@ mod tests {
     use super::*;
     use crate::{
         config::CapacityDefaults,
-        db::{SourceAppServerRecord, UsageWindowRecord},
+        db::{SourceAppServerRecord, SourceJsonlRecord, UsageWindowRecord},
     };
 
     #[tokio::test]
@@ -734,6 +852,101 @@ mod tests {
         let report = build_report(&database, None).await.unwrap();
 
         assert_eq!(report["current"]["account"]["weekly_credit"], json!(3200.0));
+    }
+
+    #[tokio::test]
+    async fn current_report_falls_back_to_recent_jsonl_quota() {
+        let database = Database::connect_in_memory().await.unwrap();
+        let observed_at_ms = now_ms().saturating_sub(1_000);
+        database
+            .upsert_source_jsonl(&SourceJsonlRecord {
+                source_key: "quota:jsonl:recent".to_owned(),
+                kind: "quota".to_owned(),
+                observed_at_ms,
+                last_seen_at_ms: Some(observed_at_ms),
+                limit_id: Some("codex".to_owned()),
+                window_kind: Some("primary".to_owned()),
+                used_percent: Some(7.0),
+                window_minutes: Some(10_080),
+                resets_at_ms: Some(observed_at_ms + 10_080 * 60_000),
+                plan_type: Some("plus".to_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let report = build_report(&database, None).await.unwrap();
+
+        assert_eq!(report["current"]["official"]["source"], json!("jsonl"));
+        assert_eq!(report["current"]["official"]["used_percent"], json!(7.0));
+        assert!(report["current"]["quality_flags"]
+            .as_array()
+            .is_some_and(|flags| flags.iter().any(|flag| flag == "official_fallback_jsonl")));
+    }
+
+    #[tokio::test]
+    async fn stale_jsonl_plan_still_selects_the_database_capacity() {
+        let database = Database::connect_in_memory().await.unwrap();
+        database
+            .ensure_default_capacities(&CapacityDefaults::default())
+            .await
+            .unwrap();
+        database
+            .set_current_capacity("usd200", 55_000.0, now_ms())
+            .await
+            .unwrap();
+        let stale_at_ms = now_ms().saturating_sub(CURRENT_OFFICIAL_MAX_AGE_MS + 1_000);
+        database
+            .upsert_source_jsonl(&SourceJsonlRecord {
+                source_key: "quota:jsonl:stale-plan".to_owned(),
+                kind: "quota".to_owned(),
+                observed_at_ms: stale_at_ms,
+                last_seen_at_ms: Some(stale_at_ms),
+                limit_id: Some("codex".to_owned()),
+                window_kind: Some("primary".to_owned()),
+                used_percent: Some(7.0),
+                plan_type: Some("pro".to_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let report = build_report(&database, None).await.unwrap();
+
+        assert_eq!(report["current"]["account"]["plan"], json!("pro"));
+        assert_eq!(
+            report["current"]["account"]["weekly_credit"],
+            json!(55_000.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn current_report_does_not_use_stale_app_server_quota() {
+        let database = Database::connect_in_memory().await.unwrap();
+        let stale_at_ms = now_ms().saturating_sub(CURRENT_OFFICIAL_MAX_AGE_MS + 1_000);
+        database
+            .upsert_source_app_server(&SourceAppServerRecord {
+                source_key: "quota:app:stale".to_owned(),
+                kind: "quota".to_owned(),
+                first_seen_at_ms: stale_at_ms,
+                last_seen_at_ms: stale_at_ms,
+                limit_id: Some("codex".to_owned()),
+                window_kind: Some("primary".to_owned()),
+                used_percent: Some(91.0),
+                resets_at_ms: Some(stale_at_ms + 10_080 * 60_000),
+                status: "ok".to_owned(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let report = build_report(&database, None).await.unwrap();
+
+        assert_eq!(report["current"]["official"]["source"], json!("none"));
+        assert!(report["current"]["official"]["used_percent"].is_null());
+        assert!(report["current"]["quality_flags"]
+            .as_array()
+            .is_some_and(|flags| flags.iter().any(|flag| flag == "app_server_stale")));
     }
 }
 

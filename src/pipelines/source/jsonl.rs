@@ -1412,7 +1412,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("codex-meter-replay-{nonce}"));
         let session_dir = root.join("sessions/2026/08");
         fs::create_dir_all(&session_dir).unwrap();
-        let usage = |timestamp: &str, last: i64, total: i64| {
+        let usage = |timestamp: &str, last: i64, total: i64, used_percent: f64| {
             json!({
                 "timestamp": timestamp,
                 "type": "event_msg",
@@ -1420,20 +1420,30 @@ mod tests {
                     "type": "token_count",
                     "info": {
                         "last_token_usage": {"input_tokens": last, "output_tokens": 0, "total_tokens": last},
-                        "total_token_usage": {"input_tokens": total, "output_tokens": 0, "total_tokens": total}
+                        "total_token_usage": {"input_tokens": total, "output_tokens": 0, "total_tokens": total},
+                        "rate_limits": {
+                            "limit_id": "codex",
+                            "primary": {"used_percent": used_percent, "window_minutes": 10080, "resets_at": 1786839350},
+                            "plan_type": "pro"
+                        }
+                    },
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "primary": {"used_percent": used_percent, "window_minutes": 10080, "resets_at": 1786839350},
+                        "plan_type": "pro"
                     }
                 }
             })
         };
         let parent = [
             json!({"timestamp":"2026-08-04T06:41:00Z","type":"session_meta","payload":{"id":"root"}}),
-            usage("2026-08-04T06:42:00Z", 100, 100),
-            usage("2026-08-04T06:44:00Z", 50, 150),
+            usage("2026-08-04T06:42:00Z", 100, 100, 10.0),
+            usage("2026-08-04T06:44:00Z", 50, 150, 20.0),
         ];
         let child = [
             json!({"timestamp":"2026-08-04T06:43:00Z","type":"session_meta","payload":{"id":"child","parent_thread_id":"root"}}),
-            usage("2026-08-04T06:43:01Z", 100, 100),
-            usage("2026-08-04T06:45:00Z", 30, 130),
+            usage("2026-08-04T06:43:01Z", 100, 100, 10.0),
+            usage("2026-08-04T06:45:00Z", 30, 130, 30.0),
         ];
         fs::write(
             session_dir.join("rollout-root.jsonl"),
@@ -1481,6 +1491,26 @@ mod tests {
                 == Some("child")
                 && row.try_get::<Option<i64>, _>("total_tokens").unwrap() == Some(30)
         }));
+        let quota_rows = rows
+            .iter()
+            .filter(|row| row.try_get::<String, _>("kind").unwrap() == "quota")
+            .collect::<Vec<_>>();
+        assert_eq!(quota_rows.len(), 3);
+        let replayed_quota = quota_rows
+            .iter()
+            .find(|row| row.try_get::<Option<f64>, _>("used_percent").unwrap() == Some(10.0))
+            .unwrap();
+        let expected = parse_timestamp(Some(&json!("2026-08-04T06:42:00Z"))).unwrap();
+        assert_eq!(
+            replayed_quota.try_get::<i64, _>("observed_at_ms").unwrap(),
+            expected
+        );
+        assert_eq!(
+            replayed_quota
+                .try_get::<Option<i64>, _>("last_seen_at_ms")
+                .unwrap(),
+            Some(expected)
+        );
         let _ = fs::remove_dir_all(root);
     }
 

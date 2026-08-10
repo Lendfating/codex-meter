@@ -482,8 +482,9 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     function currentWindow(){
       var windows=displayWindows();
       var reset=report && report.current && report.current.official && report.current.official.resets_at_ms;
+      if(!reset) return windows.slice().sort(function(a,b){return Number(a.start_at_ms||0)-Number(b.start_at_ms||0)}).pop() || null;
       windows.sort(function(a,b){
-        if(reset && a.reset_at_ms && b.reset_at_ms) return Math.abs(a.reset_at_ms-reset)-Math.abs(b.reset_at_ms-reset);
+        if(a.reset_at_ms && b.reset_at_ms) return Math.abs(a.reset_at_ms-reset)-Math.abs(b.reset_at_ms-reset);
         return Number(a.start_at_ms||0)-Number(b.start_at_ms||0);
       });
       return windows.length ? windows[0] : null;
@@ -505,13 +506,6 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       if(code==='team') return 'Team';
       return plan ? String(plan) : '订阅待识别';
     }
-    function capacityDefaults(){
-      var configured=report && report.methodology && report.methodology.capacity_defaults;
-      if(configured && number(configured.usd20)!=null && number(configured.usd100)!=null && number(configured.usd200)!=null){
-        return {usd20:number(configured.usd20),usd100:number(configured.usd100),usd200:number(configured.usd200)};
-      }
-      return {usd20:3200,usd100:16000,usd200:64000};
-    }
     function confirmedCapacity(){
       var current=report && report.current || {},account=current.account || {},direct=firstNumber(account,['weekly_credit','credit_capacity','capacity_credit']) || firstNumber(current,['weekly_credit','credit_capacity','capacity_credit']);
       if(direct!=null) return direct;
@@ -520,7 +514,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       if(!expected) return null;
       var row=(report.capacities || []).find(function(item){return item.plan_code===expected && item.status==='confirmed' && number(item.credit)!=null});
       if(row && number(row.credit)!=null) return number(row.credit);
-      return capacityDefaults()[expected];
+      return null;
     }
     function firstNumber(object,names){
       if(!object) return null;
@@ -616,9 +610,17 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     function statCard(label,value,sub){
       return '<div class="stat-card"><strong>'+value+'</strong><span>'+esc(label)+'</span>'+(sub?'<small>'+sub+'</small>':'')+'</div>';
     }
+    function officialStatusLabel(current,official){
+      var flags=current && current.quality_flags || [];
+      if(flags.indexOf('app_server_unavailable')>=0) return 'App Server 未连接；可能未安装 Codex CLI，本地 JSONL 仍可用';
+      if(flags.indexOf('app_server_stale')>=0 && flags.indexOf('official_fallback_jsonl')<0) return 'App Server 数据已过期，等待重新连接';
+      if(flags.indexOf('official_fallback_jsonl')>=0) return '当前官方值来自近期 JSONL 观测';
+      if(!official || official.source==='none') return '官方数据待刷新';
+      return '官方数据来源：'+(official.source || 'none');
+    }
     function windowSummary(){
       var current=report.current || {}, official=current.official || {}, win=currentWindow();
-      var reset=official.resets_at_ms || (win && win.reset_at_ms);
+      var reset=official.resets_at_ms;
       var start=win && win.start_at_ms;
       var now=Date.now();
       var remaining=reset && reset>now ? duration(reset-now) : reset ? '已到 Reset 或等待刷新' : '待补数据';
@@ -626,7 +628,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       var aggregate=windowAggregate(win),accountToken=accountTokenThroughYesterday(win),capacity=aggregate.capacity;
       var accountTokenValue=accountToken==null?'<span class="warn">待补数据</span>':tokens(accountToken);
       var creditSub=capacity==null?'周额度待确认':'周额度 '+creditText(capacity)+' Credit';
-      return '<section class="window-summary"><div class="panel window-main"><p class="eyebrow">当前窗口 / ACCOUNT WINDOW</p><div class="window-title"><h2>'+percent(official.used_percent)+' 已用</h2><span class="pill '+(official.remaining_percent==null?'warn':'')+'">剩余 '+percent(official.remaining_percent)+'</span></div><div class="window-range"><b>'+dateTime(start)+'</b>　→　<b>'+dateTime(reset)+'</b><span>　窗口起点 / 下次 Reset</span></div><div class="window-stats">'+statCard('账号 Token（窗口参考）',accountTokenValue,'从窗口起始日到昨天；首日可能多算，今天未结算')+statCard('本机 Token（窗口累计）',tokens(aggregate.token))+statCard('本机 API 美元（窗口累计）',money(aggregate.api))+statCard('本机 Credit（窗口累计）',creditValue(aggregate.credit),creditSub)+statCard('本机周占比',percentPrecise(aggregate.percent),'本机 Credit / 当前套餐周额度')+'</div></div><div class="panel window-side"><div><p class="eyebrow">官方窗口状态</p><strong>已过 '+elapsed+'，距下次 Reset '+remaining+'</strong><p>'+esc(official.source || 'none')+'；官方百分比历史优先来自 JSONL。</p></div><div><p>账号 Token 是日级参考；官方日期桶与本机按 UTC/北京时间切分可能不同，单日归属可能有轻微偏移；窗口/累计更可靠。本机 Token、API 美元和 Credit 按 JSONL 主事实累计；该偏移不改变本机 Credit、API 美元或本机百分比计算。</p></div></div></section>';
+      return '<section class="window-summary"><div class="panel window-main"><p class="eyebrow">当前窗口 / ACCOUNT WINDOW</p><div class="window-title"><h2>'+percent(official.used_percent)+' 已用</h2><span class="pill '+(official.remaining_percent==null?'warn':'')+'">剩余 '+percent(official.remaining_percent)+'</span></div><div class="window-range"><b>'+dateTime(start)+'</b>　→　<b>'+dateTime(reset)+'</b><span>　窗口起点 / 下次 Reset</span></div><div class="window-stats">'+statCard('账号 Token（窗口参考）',accountTokenValue,'从窗口起始日到昨天；首日可能多算，今天未结算')+statCard('本机 Token（窗口累计）',tokens(aggregate.token))+statCard('本机 API 美元（窗口累计）',money(aggregate.api))+statCard('本机 Credit（窗口累计）',creditValue(aggregate.credit),creditSub)+statCard('本机周占比',percentPrecise(aggregate.percent),'本机 Credit / 当前套餐周额度')+'</div></div><div class="panel window-side"><div><p class="eyebrow">官方窗口状态</p><strong>已过 '+elapsed+'，距下次 Reset '+remaining+'</strong><p>'+esc(officialStatusLabel(current,official))+'；官方百分比历史优先来自 JSONL。</p></div><div><p>账号 Token 是日级参考；官方日期桶与本机按 UTC/北京时间切分可能不同，单日归属可能有轻微偏移；窗口/累计更可靠。本机 Token、API 美元和 Credit 按 JSONL 主事实累计；该偏移不改变本机 Credit、API 美元或本机百分比计算。</p></div></div></section>';
     }
     function scopeTabs(){
       return '<div class="scope-tabs"><button class="scope-tab '+(usageScope==='day'?'active':'')+'" data-scope="day">按日期</button><button class="scope-tab '+(usageScope==='window'?'active':'')+'" data-scope="window">按周窗口</button></div>';
@@ -1350,7 +1352,7 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
     }
     function capacityInput(code,label){
       var existing=(report.capacities || []).find(function(value){return value.plan_code===code && value.status==='confirmed'});
-      var value=existing && existing.credit != null ? existing.credit : capacityDefaults()[code];
+      var value=existing && existing.credit != null ? existing.credit : null;
       return '<div class="capacity-input"><label for="capacity-'+code+'">'+label+'</label><input id="capacity-'+code+'" type="number" min="0" step="0.01" placeholder="Credit" value="'+esc(value==null?'':value)+'"><button class="refresh" data-save-capacity="'+code+'">保存确认值</button></div>';
     }
     function capacitySelectionPanel(days,start,end){
@@ -1478,6 +1480,8 @@ var Fr={},Gr={};var Wr,Hr=function(){function t(t,e,n){var i=this;this._sleepAft
       if(!Number.isFinite(value) || value<0){if(status) status.textContent='请输入非负 Credit 数值';return}
       var response=await fetch('/api/capacities',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({plan_code:code,credit:value})});
       if(!response.ok){var errorBody=await response.json().catch(function(){return {}});throw new Error(errorBody.error || '容量保存失败（HTTP '+response.status+'）')}
+      var saved=await response.json();
+      if(number(saved.credit)!==value) throw new Error('容量保存结果不一致：期望 '+value+'，实际 '+saved.credit);
       if(status) status.textContent='已保存 '+code+'：'+creditText(value)+' Credit';
       await load(selectedDate);
     }

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs::{self, File},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -41,6 +41,14 @@ pub(super) async fn scan_once(
     let total_started = Instant::now();
     let metadata_started = Instant::now();
     let mut cursors = load_cursors(collector.cursor_path.as_deref())?;
+    let repairing_quota_times = database.has_inverted_jsonl_quota_times().await?;
+    if repairing_quota_times {
+        // A fork/replay row may have been persisted before its original row,
+        // leaving a quota first-seen timestamp later than its last-seen time.
+        // Re-read the bounded source range once so the original observation can
+        // repair the stable quota key through the MIN/MAX upsert contract.
+        cursors = CursorStore::default();
+    }
     let local_metadata = load_local_session_metadata(&collector.codex_home).await;
     let metadata_elapsed = metadata_started.elapsed();
     let discover_started = Instant::now();
@@ -96,11 +104,19 @@ pub(super) async fn scan_once(
     let from_ms = collector.from_date.map(date_start_ms);
     for file in parsed {
         let mut replay_state = ReplayState::new(replay_specs.get(&file.path));
-        for mut record in file.records {
-            if record.kind == "usage"
-                && replay_state
-                    .as_mut()
-                    .is_some_and(|state| state.should_skip(&record_tokens(&record)))
+        let mut skipped_usage_indexes = HashSet::new();
+        let mut replayed_timestamps = HashSet::new();
+        if let Some(state) = replay_state.as_mut() {
+            for (index, record) in file.records.iter().enumerate() {
+                if record.kind == "usage" && state.should_skip(&record_tokens(record)) {
+                    skipped_usage_indexes.insert(index);
+                    replayed_timestamps.insert(record.observed_at_ms);
+                }
+            }
+        }
+        for (index, mut record) in file.records.into_iter().enumerate() {
+            if skipped_usage_indexes.contains(&index)
+                || (record.kind == "quota" && replayed_timestamps.contains(&record.observed_at_ms))
             {
                 continue;
             }
@@ -115,6 +131,9 @@ pub(super) async fn scan_once(
 
     let database_started = Instant::now();
     let batch = database.upsert_source_jsonl_batch(records).await?;
+    if repairing_quota_times {
+        database.repair_inverted_jsonl_quota_times().await?;
+    }
     let database_elapsed = database_started.elapsed();
     report.inserted_events = batch.inserted_events;
     report.duplicate_events = batch.duplicate_events;

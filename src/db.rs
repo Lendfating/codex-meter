@@ -307,8 +307,10 @@ impl Database {
         Ok(())
     }
 
-    /// Install the configured baseline capacities once. User-saved rows have
-    /// later effective dates and remain untouched by this idempotent seed.
+    /// Install the configured baseline capacities once. Databases written by
+    /// older builds stored manual values as dated account rows, so the newest
+    /// such value is promoted only while the canonical row is still an
+    /// untouched seed (`confirmed_at_ms = 0`).
     pub async fn ensure_default_capacities(
         &self,
         defaults: &CapacityDefaults,
@@ -318,8 +320,8 @@ impl Database {
             ("usd100", defaults.usd100),
             ("usd200", defaults.usd200),
         ] {
-            let exists: Option<i64> = sqlx::query_scalar(
-                "SELECT 1 FROM capacities
+            let current: Option<(f64, i64)> = sqlx::query_as(
+                "SELECT weekly_credit, confirmed_at_ms FROM capacities
                  WHERE profile_code = ?
                    AND account_key IS NULL
                    AND plan_type IS NULL
@@ -329,17 +331,45 @@ impl Database {
             .bind(profile_code)
             .fetch_optional(&self.pool)
             .await?;
-            if exists.is_some() {
+
+            let legacy: Option<(f64, i64)> = sqlx::query_as(
+                "SELECT weekly_credit, confirmed_at_ms FROM capacities
+                 WHERE profile_code = ?
+                   AND NOT (
+                       account_key IS NULL
+                       AND plan_type IS NULL
+                       AND effective_from_ms = 0
+                   )
+                 ORDER BY confirmed_at_ms DESC, effective_from_ms DESC, id DESC
+                 LIMIT 1",
+            )
+            .bind(profile_code)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if let Some((_, confirmed_at_ms)) = current {
+                if confirmed_at_ms == 0 {
+                    if let Some((legacy_credit, legacy_confirmed_at_ms)) = legacy {
+                        self.set_current_capacity(
+                            profile_code,
+                            legacy_credit,
+                            legacy_confirmed_at_ms,
+                        )
+                        .await?;
+                    }
+                }
                 continue;
             }
+            let (weekly_credit, confirmed_at_ms) = legacy.unwrap_or((weekly_credit, 0));
             sqlx::query(
                 "INSERT INTO capacities
                     (profile_code, account_key, plan_type, weekly_credit,
                      effective_from_ms, effective_to_ms, confirmed_at_ms)
-                 VALUES (?, NULL, NULL, ?, 0, NULL, 0)",
+                 VALUES (?, NULL, NULL, ?, 0, NULL, ?)",
             )
             .bind(profile_code)
             .bind(weekly_credit)
+            .bind(confirmed_at_ms)
             .execute(&self.pool)
             .await?;
         }
@@ -398,7 +428,19 @@ impl Database {
                  resets_at_ms, quality)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(source_key) DO UPDATE SET
-                last_seen_at_ms = COALESCE(excluded.last_seen_at_ms, source_jsonl.last_seen_at_ms),
+                observed_at_ms = CASE
+                    WHEN source_jsonl.kind = 'quota'
+                    THEN MIN(source_jsonl.observed_at_ms, excluded.observed_at_ms)
+                    ELSE source_jsonl.observed_at_ms
+                END,
+                last_seen_at_ms = CASE
+                    WHEN source_jsonl.kind = 'quota'
+                    THEN MAX(
+                        COALESCE(source_jsonl.last_seen_at_ms, source_jsonl.observed_at_ms),
+                        COALESCE(excluded.last_seen_at_ms, excluded.observed_at_ms)
+                    )
+                    ELSE COALESCE(excluded.last_seen_at_ms, source_jsonl.last_seen_at_ms)
+                END,
                 parent_session_id = COALESCE(excluded.parent_session_id, source_jsonl.parent_session_id),
                 root_session_id = COALESCE(excluded.root_session_id, source_jsonl.root_session_id),
                 turn_id = COALESCE(excluded.turn_id, source_jsonl.turn_id),
@@ -773,6 +815,41 @@ impl Database {
         Ok(result.last_insert_rowid())
     }
 
+    pub async fn set_current_capacity(
+        &self,
+        profile_code: &str,
+        weekly_credit: f64,
+        confirmed_at_ms: i64,
+    ) -> Result<(), DbError> {
+        let result = sqlx::query(
+            "UPDATE capacities
+             SET weekly_credit = ?, confirmed_at_ms = ?, effective_to_ms = NULL
+             WHERE profile_code = ?
+               AND account_key IS NULL
+               AND plan_type IS NULL
+               AND effective_from_ms = 0",
+        )
+        .bind(weekly_credit)
+        .bind(confirmed_at_ms)
+        .bind(profile_code)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            sqlx::query(
+                "INSERT INTO capacities
+                    (profile_code, account_key, plan_type, weekly_credit,
+                     effective_from_ms, effective_to_ms, confirmed_at_ms)
+                 VALUES (?, NULL, NULL, ?, 0, NULL, ?)",
+            )
+            .bind(profile_code)
+            .bind(weekly_credit)
+            .bind(confirmed_at_ms)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
     pub async fn list_source_jsonl(&self) -> Result<Vec<SqliteRow>, DbError> {
         Ok(
             sqlx::query("SELECT * FROM source_jsonl ORDER BY observed_at_ms, id")
@@ -852,6 +929,18 @@ impl Database {
         )
     }
 
+    pub async fn list_current_capacities(&self) -> Result<Vec<SqliteRow>, DbError> {
+        Ok(sqlx::query(
+            "SELECT * FROM capacities
+             WHERE account_key IS NULL
+               AND plan_type IS NULL
+               AND effective_from_ms = 0
+             ORDER BY profile_code",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn list_all_tables(&self) -> Result<Vec<SqliteRow>, DbError> {
         Ok(sqlx::query(
             "SELECT name FROM sqlite_master
@@ -919,6 +1008,85 @@ mod tests {
                 .unwrap(),
             defaults.usd20
         );
+    }
+
+    #[tokio::test]
+    async fn current_capacity_overwrites_the_seed_without_using_history_rows() {
+        let database = Database::connect_in_memory().await.unwrap();
+        database
+            .ensure_default_capacities(&CapacityDefaults::default())
+            .await
+            .unwrap();
+        database
+            .upsert_capacity(&CapacityRecord {
+                profile_code: "usd100".to_owned(),
+                account_key: Some("old-account".to_owned()),
+                plan_type: Some("pro".to_owned()),
+                weekly_credit: 13_799.83,
+                effective_from_ms: 99,
+                confirmed_at_ms: 99,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        database
+            .set_current_capacity("usd100", 13_800.0, 100)
+            .await
+            .unwrap();
+
+        let rows = database.list_current_capacities().await.unwrap();
+        assert_eq!(rows.len(), 3);
+        let usd100 = rows
+            .iter()
+            .find(|row| row.try_get::<String, _>("profile_code").unwrap() == "usd100")
+            .unwrap();
+        assert_eq!(usd100.try_get::<f64, _>("weekly_credit").unwrap(), 13_800.0);
+        assert_eq!(usd100.try_get::<i64, _>("effective_from_ms").unwrap(), 0);
+        assert_eq!(database.list_capacities().await.unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn legacy_manual_capacity_is_promoted_once() {
+        let database = Database::connect_in_memory().await.unwrap();
+        database
+            .upsert_capacity(&CapacityRecord {
+                profile_code: "usd200".to_owned(),
+                account_key: Some("old-account".to_owned()),
+                plan_type: Some("pro".to_owned()),
+                weekly_credit: 55_000.0,
+                effective_from_ms: 99,
+                confirmed_at_ms: 99,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        database
+            .ensure_default_capacities(&CapacityDefaults::default())
+            .await
+            .unwrap();
+        let current = database.list_current_capacities().await.unwrap();
+        let usd200 = current
+            .iter()
+            .find(|row| row.try_get::<String, _>("profile_code").unwrap() == "usd200")
+            .unwrap();
+        assert_eq!(usd200.try_get::<f64, _>("weekly_credit").unwrap(), 55_000.0);
+
+        database
+            .set_current_capacity("usd200", 60_000.0, 100)
+            .await
+            .unwrap();
+        database
+            .ensure_default_capacities(&CapacityDefaults::default())
+            .await
+            .unwrap();
+        let current = database.list_current_capacities().await.unwrap();
+        let usd200 = current
+            .iter()
+            .find(|row| row.try_get::<String, _>("profile_code").unwrap() == "usd200")
+            .unwrap();
+        assert_eq!(usd200.try_get::<f64, _>("weekly_credit").unwrap(), 60_000.0);
     }
 
     #[tokio::test]

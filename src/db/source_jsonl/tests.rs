@@ -124,6 +124,18 @@ fn normalization_preserves_first_stable_fields_and_last_non_null_updates() {
     assert_eq!(record.quality.as_deref(), Some("quality-third"));
 }
 
+#[test]
+fn quota_normalization_keeps_earliest_observation_and_latest_confirmation() {
+    let late = rich_record("quota:stable", "late", 2_000, "quota");
+    let early = rich_record("quota:stable", "early", 1_000, "quota");
+
+    let normalized = normalize_records(vec![late, early]);
+    let record = &normalized.records[0];
+
+    assert_eq!(record.observed_at_ms, 1_000);
+    assert_eq!(record.last_seen_at_ms, Some(2_001));
+}
+
 #[tokio::test]
 async fn batch_matches_sequential_upsert_for_every_source_column() {
     let sequential = Database::connect_in_memory().await.unwrap();
@@ -208,4 +220,30 @@ async fn batch_handles_empty_and_more_than_one_lookup_chunk() {
     assert_eq!(first.duplicate_events, 0);
     assert_eq!(second.inserted_events, 0);
     assert_eq!(second.duplicate_events, 801);
+}
+
+#[tokio::test]
+async fn quota_upsert_repairs_a_late_replay_observation() {
+    let database = Database::connect_in_memory().await.unwrap();
+    let mut replay = rich_record("quota:stable", "replay", 2_000, "quota");
+    replay.last_seen_at_ms = Some(900);
+    database
+        .upsert_source_jsonl_batch(vec![replay])
+        .await
+        .unwrap();
+    assert!(database.has_inverted_jsonl_quota_times().await.unwrap());
+
+    let original = rich_record("quota:stable", "original", 1_000, "quota");
+    database
+        .upsert_source_jsonl_batch(vec![original])
+        .await
+        .unwrap();
+
+    let row = database.list_source_jsonl().await.unwrap().pop().unwrap();
+    assert_eq!(row.try_get::<i64, _>("observed_at_ms").unwrap(), 1_000);
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("last_seen_at_ms").unwrap(),
+        Some(1_001)
+    );
+    assert!(!database.has_inverted_jsonl_quota_times().await.unwrap());
 }
