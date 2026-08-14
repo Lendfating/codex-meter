@@ -6,7 +6,8 @@
 
 use std::{
     collections::HashSet,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
+    path::PathBuf,
     process::{Command, Stdio},
     sync::mpsc,
     time::Duration,
@@ -29,6 +30,10 @@ pub enum AppServerError {
     Database(#[from] DbError),
     #[error("App Server timed out")]
     Timeout,
+    #[error("Codex CLI not found: {0}. Set CODEX_BIN or add codex to PATH")]
+    CliNotFound(String),
+    #[error("App Server command failed ({program}): {detail}")]
+    Command { program: String, detail: String },
 }
 
 #[derive(Clone, Debug)]
@@ -143,12 +148,18 @@ fn run_command(
     config: &AppServerConfig,
     include_usage: bool,
 ) -> Result<Vec<String>, AppServerError> {
-    let mut child = Command::new(&config.program)
+    let program = resolve_program(config)?;
+    let program_label = program.display().to_string();
+    let mut child = Command::new(&program)
         .args(&config.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| AppServerError::Command {
+            program: program_label.clone(),
+            detail: error.to_string(),
+        })?;
     let mut stdin = child.stdin.take().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::BrokenPipe,
@@ -161,6 +172,13 @@ fn run_command(
             "App Server stdout unavailable",
         )
     })?;
+    let stderr_handle = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            let _ = BufReader::new(stderr).read_to_string(&mut text);
+            text
+        })
+    });
     let requests = [
         serde_json::json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-meter","title":"Codex Meter","version":"minimal-r2"},"capabilities":null}}),
         serde_json::json!({"method":"initialized"}),
@@ -194,10 +212,15 @@ fn run_command(
     let wanted = if include_usage { 4 } else { 3 };
     let mut seen_ids = HashSet::new();
     let mut lines = Vec::new();
+    let mut receive_error = None;
     while seen_ids.len() < wanted {
-        let line = receiver
-            .recv_timeout(config.read_timeout)
-            .map_err(|_| AppServerError::Timeout)?;
+        let line = match receiver.recv_timeout(config.read_timeout) {
+            Ok(line) => line,
+            Err(_) => {
+                receive_error = Some(AppServerError::Timeout);
+                break;
+            }
+        };
         if let Ok(value) = serde_json::from_str::<Value>(&line) {
             if let Some(id) = value.get("id").and_then(Value::as_i64) {
                 seen_ids.insert(id);
@@ -207,7 +230,70 @@ fn run_command(
     }
     let _ = child.kill();
     let _ = child.wait();
+    let stderr = stderr_handle
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+    if let Some(error) = receive_error {
+        if stderr.trim().is_empty() {
+            return Err(error);
+        }
+        return Err(AppServerError::Command {
+            program: program_label,
+            detail: format!("{error}; stderr: {}", stderr.trim()),
+        });
+    }
     Ok(lines)
+}
+
+fn resolve_program(config: &AppServerConfig) -> Result<PathBuf, AppServerError> {
+    if config.program != "codex" {
+        let path = PathBuf::from(&config.program);
+        if path.components().count() > 1 && !path.is_file() {
+            return Err(AppServerError::CliNotFound(path.display().to_string()));
+        }
+        return Ok(path);
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(value) = std::env::var_os("CODEX_BIN") {
+        let value = PathBuf::from(value);
+        if !value.as_os_str().is_empty() {
+            candidates.push(value);
+        }
+    }
+    if let Some(path) = find_command("codex") {
+        candidates.push(path);
+    }
+    candidates.extend(common_codex_paths());
+
+    if let Some(path) = candidates.into_iter().find(|path| path.is_file()) {
+        return Ok(path);
+    }
+
+    Err(AppServerError::CliNotFound(
+        "checked CODEX_BIN, PATH, /opt/homebrew/bin/codex, /usr/local/bin/codex, ~/.local/bin/codex, and ~/bin/codex"
+            .to_owned(),
+    ))
+}
+
+fn find_command(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+fn common_codex_paths() -> Vec<PathBuf> {
+    let mut paths = vec![
+        PathBuf::from("/opt/homebrew/bin/codex"),
+        PathBuf::from("/usr/local/bin/codex"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        paths.push(home.join(".local/bin/codex"));
+        paths.push(home.join("bin/codex"));
+    }
+    paths
 }
 
 async fn ingest_value(
@@ -218,6 +304,10 @@ async fn ingest_value(
     report: &mut AppServerScanReport,
 ) -> Result<(), AppServerError> {
     if message.get("error").is_some() {
+        eprintln!(
+            "App Server protocol error: {}",
+            sanitize(message.get("error").cloned().unwrap_or(Value::Null))
+        );
         record_unavailable(database, fallback_observed_at_ms).await?;
         return Ok(());
     }
@@ -563,6 +653,17 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use sqlx::Row;
+
+    #[test]
+    fn missing_explicit_cli_path_explains_override() {
+        let config = AppServerConfig {
+            program: "/definitely/missing/codex".to_owned(),
+            ..AppServerConfig::default()
+        };
+        let error = resolve_program(&config).unwrap_err().to_string();
+        assert!(error.contains("CODEX_BIN"));
+        assert!(error.contains("missing/codex"));
+    }
 
     #[tokio::test]
     async fn stores_sanitized_account_quota_and_usage() {
